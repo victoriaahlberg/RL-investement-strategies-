@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+build/
+dist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Project directories
+data/
+models/
+results/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Conda
+.conda/
+conda-bld/
+
+# Misc
+*.zip
+*.log
+*.swp
+*.swo
+.vscode/
+.idea/
+.env
