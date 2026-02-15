@@ -12,6 +12,8 @@ import os
 import numpy as np
 from collections import Counter
 from evaluation.metrics import calculate_sharpe_ratio, calculate_max_drawdown,volatility, num_trades
+from evaluation.predictive_factors import cumulative_volatility, cumulative_drawdown, cumulative_cvar
+
 
 
 # Configure logging
@@ -155,6 +157,13 @@ df.set_index("Date", inplace=True)
 df.name = symbol
 logger.info(f"Filtered data: {len(df)} rows from {df.index.min()} to {df.index.max()}")
 
+
+df['cum_volatility'] = cumulative_volatility(df['close'])
+df['cum_drawdown'] = cumulative_drawdown(df['close'])
+df['cum_cvar'] = cumulative_cvar(df['close'])
+
+# Fill any NaNs with 0 (important for the first row or edge cases)
+df[['cum_volatility','cum_drawdown','cum_cvar']] = df[['cum_volatility','cum_drawdown','cum_cvar']].fillna(0.0)
 
 # Initialize environments
 env_with_sentiment = lambda: TradingEnv(df, use_sentiment=True)
@@ -352,3 +361,15 @@ plot_results(
     trades_without_sentiment,
     symbol
 )
+
+# After running the simulation with the trained model
+plt.figure(figsize=(14,6))
+plt.plot(df.index, env.cum_vol, label="Cumulative Volatility")
+plt.plot(df.index, env.cum_dd, label="Cumulative Drawdown")
+plt.plot(df.index, env.cum_cvar, label="Cumulative CVaR")
+plt.title(f"{symbol} Risk Metrics Evolution")
+plt.xlabel("Date")
+plt.ylabel("Metric Value")
+plt.legend()
+plt.tight_layout()
+plt.show()

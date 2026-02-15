@@ -16,6 +16,8 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 from typing import Tuple, Dict, Any
+from evaluation.predictive_factors import cumulative_volatility, cumulative_drawdown, cumulative_cvar
+
 
 
 class TradingEnv(gym.Env):
@@ -35,7 +37,8 @@ class TradingEnv(gym.Env):
         df: pd.DataFrame,
         use_sentiment: bool = True,
         initial_balance: float = 10_000.0,
-    ) -> None:
+        #computing cumulatigve risk features
+        ) -> None:
         """
         Initialize the environment.
 
@@ -66,13 +69,21 @@ class TradingEnv(gym.Env):
         self.current_step = 0
 
         # Observation: 5 price features + optional sentiment
-        n_features = 5 + (1 if self.use_sentiment else 0)
+        n_features = 5 
+        if self.use_sentiment:
+            n_features+=1
+        
+        n_features += 3  # cum_vol, cum_dd, cum_cvar
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
         )
 
         # Actions: 0=hold, 1=buy, 2=sell
         self.action_space = spaces.Discrete(3)
+        #computing risk features
+        self.cum_vol=cumulative_volatility(self.df["close"])
+        self.cum_dd= cumulative_drawdown(self.df["close"])
+        self.cum_cvar=cumulative_cvar(self.df["close"])
 
     def reset(self, seed=None, options=None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Reset to initial state (day 0, full cash, no shares)."""
@@ -99,6 +110,11 @@ class TradingEnv(gym.Env):
         ]
         if self.use_sentiment:
             obs.append(row.get("sentiment", 0.0))
+        
+        # add predictive factors
+        obs.append(row.get("cum_volatility", 0.0))
+        obs.append(row.get("cum_drawdown", 0.0))
+        obs.append(row.get("cum_cvar", 0.0))
 
         return np.array(obs, dtype=np.float32)
 
