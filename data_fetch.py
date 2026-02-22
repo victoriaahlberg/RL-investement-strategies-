@@ -63,7 +63,12 @@ def fetch_stock_data(symbol: str, start: str, end: str) -> pd.DataFrame:
     """
     try:
         # Extend end date by one day to include the last trading day
-        end_dt = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        # Handle end date (allow None → today)
+        if end is None: #cambiado para que acepte fecha hasta el dia de hoy 
+            end_dt = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d") #que use el dia de hoy
+        else:
+            end_dt = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d") #caso de tener una fecha de cierre exacta
+
         ticker = yf.Ticker(symbol)
         df = ticker.history(start=start, end=end_dt)
 

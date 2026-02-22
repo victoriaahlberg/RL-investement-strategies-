@@ -12,7 +12,14 @@ import os
 import numpy as np
 from collections import Counter
 from evaluation.metrics import calculate_sharpe_ratio, calculate_max_drawdown,volatility, num_trades
-from evaluation.predictive_factors import cumulative_volatility, cumulative_drawdown, cumulative_cvar
+from evaluation.predictive_factors import (
+    cumulative_volatility,
+    cumulative_drawdown,
+    cumulative_cvar,
+    prob_up,
+    prob_max_drawdown,
+    signal_entropy
+)
 
 
 
@@ -131,6 +138,8 @@ symbol = config["stock_symbol"]
 initial_balance = config.get("initial_balance", 10000)
 start_date = config["start_date"]
 end_date = config["end_date"]
+
+
 raw_dir = config["raw_dir"]
 processed_dir = config["processed_dir"]
 sentiment_mode = config.get("sentiment_mode", "individual")
@@ -151,7 +160,15 @@ logger.info(f"Using data: {data_path}")
 
 df = pd.read_csv(data_path)
 df["Date"] = pd.to_datetime(df["Date"])
-df = df[(df["Date"] >= start_date) & (df["Date"] <= end_date)].copy()
+start_dt = pd.to_datetime(start_date)
+
+if end_date is None:
+    df = df[df["Date"] >= start_dt].copy()
+else:
+    end_dt = pd.to_datetime(end_date)
+    df = df[(df["Date"] >= start_dt) & (df["Date"] <= end_dt)].copy()
+
+
 df = df.sort_values("Date").reset_index(drop=True)
 df.set_index("Date", inplace=True)
 df.name = symbol
@@ -164,10 +181,25 @@ df['cum_cvar'] = cumulative_cvar(df['close'])
 
 # Fill any NaNs with 0 (important for the first row or edge cases)
 df[['cum_volatility','cum_drawdown','cum_cvar']] = df[['cum_volatility','cum_drawdown','cum_cvar']].fillna(0.0)
+df["prob_up"] = prob_up(df["close"], horizon=21)
+df["prob_max_drawdown"] = prob_max_drawdown(df["close"], horizon=21, threshold=0.1)
+df["signal_entropy"] = signal_entropy(df["close"], horizon=21)
+df[["prob_up","prob_max_drawdown","signal_entropy"]] = (
+df[["prob_up","prob_max_drawdown","signal_entropy"]].fillna(0.0)
+)
+
 
 # Initialize environments
-env_with_sentiment = lambda: TradingEnv(df, use_sentiment=True)
-vec_env_with_sentiment = make_vec_env(env_with_sentiment, n_envs=1)
+vec_env_with_sentiment = make_vec_env(
+    lambda: TradingEnv(df.copy(), use_sentiment=True),
+    n_envs=1
+)
+
+vec_env_without_sentiment = make_vec_env(
+    lambda: TradingEnv(df.copy(), use_sentiment=False),
+    n_envs=1
+)
+
 env_without_sentiment = lambda: TradingEnv(df, use_sentiment=False)
 vec_env_without_sentiment = make_vec_env(env_without_sentiment, n_envs=1)
 logger.info("Environments initialized")
