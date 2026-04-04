@@ -16,7 +16,6 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 from typing import Tuple, Dict, Any
-from evaluation.predictive_factors import cumulative_volatility, cumulative_drawdown, cumulative_cvar
 
 
 
@@ -38,6 +37,7 @@ class TradingEnv(gym.Env):
         use_sentiment: bool = True,
         initial_balance: float = 10_000.0,
         return_horizon: int = 21, #new time horizon added to improve hold actions
+        window_size: int= 10
         ) -> None:
         """
         Initialize the environment.
@@ -64,39 +64,42 @@ class TradingEnv(gym.Env):
         self.initial_balance = float(initial_balance)
         self.return_horizon = return_horizon
 
-
+        self.window_size= window_size
         # State variables
         self.balance = self.initial_balance
         self.shares_held = 0.0
         self.current_step = 0
 
-        # Observation: 5 price features + optional sentiment
-        n_features = 5 
-        if self.use_sentiment:
-            n_features+=1
         
-        n_features += 3  # cum_vol, cum_dd, cum_cvar
-        n_features+=3 #nuevas probabilidades
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
-        )
+        #Número de features de mercado por día
+        n_features_per_day = 5  # open, high, low, close, volume
+        if self.use_sentiment:
+            n_features_per_day += 1
 
+        # Features extras que agregamos cada día
+        extra_features = 7  # prob_up, prob_max_drawdown, signal_entropy, MACD, RSI, DDI, vol
+
+        # Observación total
+        #información que viene del mercado 
+        window_features = self.window_size * (n_features_per_day+extra_features)
+        agent_features= 3
+        total_features= window_features + agent_features
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(total_features,), dtype=np.float32
+        )
         # Actions: 0=hold, 1=buy, 2=sell
         self.action_space = spaces.Discrete(3)
-        #computing risk features
-        self.cum_vol=cumulative_volatility(self.df["close"])
-        self.cum_dd= cumulative_drawdown(self.df["close"])
-        self.cum_cvar=cumulative_cvar(self.df["close"])
-        #guardar en el dataframe
-        self.df["cum_volatility"] = self.cum_vol
-        self.df["cum_drawdown"] = self.cum_dd
-        self.df["cum_cvar"] = self.cum_cvar
+
+        for col in ["prob_up", "prob_max_drawdown", "signal_entropy"]:
+            if col not in self.df.columns:
+                self.df[col] = 0.0
+        
 
 
     def reset(self, seed=None, options=None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Reset to initial state (day 0, full cash, no shares)."""
         super().reset(seed=seed)
-        self.current_step = 0
+        self.current_step = self.window_size
         self.balance = self.initial_balance
         self.shares_held = 0.0
         return self._get_observation(), {}
@@ -105,97 +108,101 @@ class TradingEnv(gym.Env):
             return self.balance + self.shares_held*price
 
     def _get_observation(self) -> np.ndarray:
-        """Return current day's data as observation.
-        Safe: when episode ends, returns the last valid day.
-        """
-        # Clamp index to last row when episode is finished
-        idx = min(self.current_step, len(self.df) - 1)
-        row = self.df.iloc[idx]
+        #construye el vector de estado que recibe el estado
+        end = self.current_step + 1
+        start = max(0, end - self.window_size)
+        window = self.df.iloc[start:end]
+        n_rows = len(window)
 
-        obs = [
-            row["open"],
-            row["high"],
-            row["low"],
-            row["close"],
-            row["volume"],
-        ]
+        obs_list = []
+
+        # Precio y volumen (5 columnas)
+        price_vol = window[["open","high","low","close","volume"]].values.flatten()
+        # si no hay suficientes datos 
+        if n_rows < self.window_size:
+            price_vol = np.pad(price_vol, (0, (self.window_size - n_rows) * 5), 'constant')
+        obs_list.extend(price_vol)
+
+        # Sentiment (si aplica)
         if self.use_sentiment:
-            obs.append(row.get("sentiment", 0.0))
+            sentiment = window["sentiment"].values.flatten()
+            if n_rows < self.window_size:
+                sentiment = np.pad(sentiment, (0, self.window_size - n_rows), 'constant')
+            obs_list.extend(sentiment)
 
-        #añadir valores a la lista que vera el agente
-        # add predictive factors
-        obs.append(row.get("cum_volatility", 0.0))
-        obs.append(row.get("cum_drawdown", 0.0))
-        obs.append(row.get("cum_cvar", 0.0))
-        #nuevas probabilidades
-        obs.append(row.get("prob_up",0.5))
-        obs.append(row.get("prob_max_drawdown",0.0))
-        obs.append(row.get("signal_entropy",0.0))
-        #debugging
-        obs_array = np.array(obs, dtype=np.float32)
-        # Limpia NaN e infinitos
+        # Features para el agente
+        for col in ["prob_up", "prob_max_drawdown", "signal_entropy", "macd", "rsi", "ddi", "rolling_vol"]:
+            if col not in self.df.columns:
+                self.df[col] = 0.0  # inicializa si no existe
+            feat = window[col].values.flatten()
+            if n_rows < self.window_size:
+                feat = np.pad(feat, (0, self.window_size - n_rows), 'constant')
+            obs_list.extend(feat)
+            
+        # Estado del agente
+        obs_list.append(self.balance)
+        obs_list.append(self.shares_held)
+
+        current_price = window.iloc[-1]["close"]
+        net_worth = self._get_net_worth(current_price)
+        obs_list.append(net_worth)
+        
+        obs_array = np.array(obs_list, dtype=np.float32)
+        #limpiar valores problemáticos 
         obs_array = np.nan_to_num(obs_array, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        # Verifica tamaño
+        #  Verifica tamaño
         if obs_array.shape[0] != self.observation_space.shape[0]:
-            raise ValueError(
-                f"OBS SIZE MISMATCH: got {obs_array.shape[0]}, "
-                f"expected {self.observation_space.shape[0]}"
-            )
+            raise ValueError(f"OBS SIZE MISMATCH: got {obs_array.shape[0]}, expected {self.observation_space.shape[0]}")
 
         return obs_array
-
-
-
-
+        
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        """
-        Execute one trading day.
+        #ejecuta una acción del agente 
 
-        Actions:
-            0 → Hold
-            1 → Buy (use all available cash)
-            2 → Sell (sell all shares)
+        #vaso fin del dataset
+        if self.current_step >= len(self.df):
+            terminated = True
+            truncated = False
+            reward = 0.0
+            return self._get_observation(), reward, terminated, truncated, {}
 
-        Reward: profit when selling.
-        """
         if not self.action_space.contains(action):
-            raise ValueError(f"Invalid action: {action}")
+            raise ValueError(f"Acción inválida: {action}")
 
         current_price = float(self.df.iloc[self.current_step]["close"])
         net_worth_before = self._get_net_worth(current_price)
         reward = 0.0
 
-        if action == 1:  # Buy all
+        # Ejecutar acción
+        if action == 1:  # Buy
             shares_to_buy = self.balance // current_price
             cost = shares_to_buy * current_price
             self.shares_held += shares_to_buy
             self.balance -= cost
-
-        elif action == 2:  # Sell all
+        elif action == 2:  # Sell
             revenue = self.shares_held * current_price
             self.balance += revenue
-              # Simple reward = money received
             self.shares_held = 0.0
 
-        # Advance to next day
+        # Avanzar al siguiente día
         self.current_step += 1
-        #future-based rewards
-        #select future index
-        future_idx=min(self.current_step + self.return_horizon,len(self.df)-1)
-        #used internally to compute the reward, the agent does not see this
-        future_price= float(self.df.iloc[future_idx]["close"])
-        net_worth_after= self._get_net_worth(future_price)
-        #normalize future net worth, this makes it easeier to compare results 
-        reward= (net_worth_after - net_worth_before)/ self.initial_balance
-        
-        terminated=self.current_step >= len(self.df)
-        truncated=False
+        #para clcular  el reward
+        next_idx = min(self.current_step, len(self.df) - 1)
+        next_price = float(self.df.iloc[next_idx]["close"])
+
+        net_worth_after = self._get_net_worth(next_price)
+        reward = 100*(net_worth_after - net_worth_before) / self.initial_balance
+
+        terminated = self.current_step >= len(self.df)
+        truncated = False
 
         return self._get_observation(), float(reward), terminated, truncated, {}
+
  
 
     def render(self, mode: str = "human") -> None: #modo human es estándar de gym
+        #imprime el estado actual del portofolio
         """Print current portfolio status."""
         if mode != "human":
             return
