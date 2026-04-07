@@ -22,6 +22,8 @@ import os
 
 #el archivo define observaciones, acciones, recompensas, estado interno(balance, acciones, historial)
 
+#lags: valores pasados, sin ellos el modelo no ve lo que ocurrió antes 
+
 # --- Load commission from config.yaml (correct path) ---
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "configs")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")

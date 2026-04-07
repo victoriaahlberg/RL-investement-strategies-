@@ -73,6 +73,9 @@ vt_params = {
     "return_raw": True,
 }
 
+print(f"DEBUG: Tipo de df_mom: {type(df_mom)}")
+if isinstance(df_mom, pd.DataFrame):
+    print(f"DEBUG: Columnas disponibles: {df_mom.columns.tolist()}")
 df_vt = apply_vol_target(df_mom.copy(), vt_params) #escala la señal de momentun para que cumpla un objetivo de volatilidad anual 
 print(f"   → Volatility targeting applied (last exposure: {df_vt['exposure'].iloc[-1]:.4f})")
 

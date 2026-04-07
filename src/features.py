@@ -194,6 +194,15 @@ def generate_features(df: pd.DataFrame, config: Dict[str, Any] = None) -> pd.Dat
     df = add_lagged_returns(df)
     df = add_vol_normalized(df)
 
+    close=df["close"]
+    high=df["high"]
+    low=df["low"]
+    #más señal, menos plano, más trades
+    df["ret_1"] = close.pct_change(1)
+    df["ret_2"] = close.pct_change(2)
+    df["ret_3"] = close.pct_change(3)
+    df["range"] = (high - low) / close #mide volatilidad intrabar
+
     # === Future features: only in research mode ===
     if mode == "research":
         df = add_future_features(df)
@@ -215,4 +224,6 @@ def generate_features(df: pd.DataFrame, config: Dict[str, Any] = None) -> pd.Dat
         f"Feature generation completed → {len(df.columns)} columns | "
         f"Mode: {mode.upper()} | Future features: {future_count}"
     )
+   
+
     return df

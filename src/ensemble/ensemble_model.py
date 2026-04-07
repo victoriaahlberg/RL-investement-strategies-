@@ -20,7 +20,7 @@ from pathlib import Path
 
 import torch
 
-from src.features import generate_features
+from features import generate_features
 from src.models.momentum import generate_momentum_signal
 from src.models.volatility_targeting import apply_vol_target
 from src.models.xgboost_model import XGBoostPredictor
@@ -34,16 +34,16 @@ logger = logging.getLogger(__name__)
 
 
 class EnsembleModel:
-    """
-    Main ensemble that combines multiple signal sources and produces a final
-    trading position (long/short/flat).
-    """
+   
+   #combina todas las señales disponibles (momentum, XGboost, LSTM, Sentiment, etc) 
+   # en un único output: la posición final de trading 
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize all predictors according to the config."""
         self.cfg = config
         self.ensemble_cfg = config.get("ensemble", {})
 
+        #activamos los predictos según la config
         # Feature flags
         self.momentum_enabled = bool(self.ensemble_cfg.get("momentum", {}).get("enabled", False))
         self.xgboost_enabled = bool(self.ensemble_cfg.get("xgboost", {}).get("enabled", False))
@@ -59,8 +59,11 @@ class EnsembleModel:
         self.rl_overlay = RLRiskOverlay(self.ensemble_cfg.get("rl_risk_overlay", {})) if self.rl_overlay_enabled else None
 
         # Weighting & thresholds
-        self.custom_weights = self.ensemble_cfg.get("weighting", {}).get("custom_weights", None)
+        #ponderación de cada señal en la combinación final 
+        self.custom_weights = self.ensemble_cfg.get("weighting", {}).get("custom_weights", None) #definidas en config 
+        #evita posiciones muy pequeñas
         self.min_position_threshold = float(self.ensemble_cfg.get("weighting", {}).get("min_position_threshold", 0.0))
+        #posición max permitida 
         self.max_exposure_abs = float(self.ensemble_cfg.get("max_exposure_abs", 1.0))
 
     # --------------------------------------------------------------------- #
@@ -68,11 +71,12 @@ class EnsembleModel:
     # --------------------------------------------------------------------- #
     def apply_overlay(self, signal: pd.Series, sentiment: pd.Series, vol: pd.Series) -> pd.Series:
         """Apply simple sentiment/volatility overlay multiplier."""
+        #aplica ajuste de exposición
         overlay = pd.Series(1.0, index=signal.index)
         overlay.loc[vol > 0.03] *= 0.6          # high volatility → reduce exposure
         overlay.loc[sentiment > 0.7] *= 1.1     # very positive sentiment → slight boost
         overlay.loc[sentiment < -0.7] *= 0.85   # very negative sentiment → reduce
-        return overlay.clip(0.0, 1.2)
+        return overlay.clip(0.0, 1.2) #modula la señal combinada según volatilidad y sentimiento 
 
     # --------------------------------------------------------------------- #
     # Helper: which signal columns are actually present?
@@ -98,11 +102,17 @@ class EnsembleModel:
         Traditional backtesting method.
         Kept for quick development / offline backtests.
         """
+        #propóstio: pruebas rápidas, debiggon, experimentación
+        #el objetivo es ver si la estrategia funciona
+        #esta función se permite usar datos futuros para desarrollo/backtesting no para resultados reales 
+        #este método se usa para probar y depurar 
+        #ordena por fehcas 
         df = df.copy()
         if "Date" in df.columns:
             df = df.set_index("Date")
         df = df.sort_index()
 
+        #genera señales por momento 
         # 1. Momentum
         if self.momentum_enabled:
             df = generate_momentum_signal(df, self.ensemble_cfg.get("momentum", {}))
@@ -142,7 +152,7 @@ class EnsembleModel:
                 w = w / w.sum() if w.sum() > 0 else np.ones_like(w) / len(w)
                 df["signal_ensemble"] = (df[signal_cols] * w).sum(axis=1)
             else:
-                df["signal_ensemble"] = df[signal_cols].mean(axis=1)
+                df["signal_ensemble"] = df[signal_cols].mean(axis=1) # si no hay ponderación hacemos la media simple
 
             df["signal_ensemble"] = df["signal_ensemble"].clip(-1.0, 1.0)
             df["clean_ensemble"] = df["signal_ensemble"].where(
@@ -151,29 +161,37 @@ class EnsembleModel:
 
         # 7. Overlay (sentiment + volatility)
         if "sentiment" in df.columns and "close" in df.columns:
+            #calcula volatilidad histórica 
             vol = df["close"].pct_change().rolling(20).std().fillna(0.0)
             overlay = self.apply_overlay(df["clean_ensemble"], df["sentiment"], vol)
             df["clean_ensemble"] = (df["clean_ensemble"] * overlay).clip(-1.0, 1.0)
 
         # 8. Volatility targeting
         if self.vol_target_enabled:
+            #ajusta la posición según riesgo objetivo
             df["clean_signal"] = df["clean_ensemble"]
             df = apply_vol_target(df, self.ensemble_cfg.get("volatility_targeting", {}))
             df.drop(columns=["clean_signal"], inplace=True, errors="ignore")
 
         # 9. RL risk overlay (optional)
         if self.rl_overlay_enabled and self.rl_overlay:
-            pos = df["exposure"].fillna(0.0) if "exposure" in df.columns else df["clean_ensemble"].fillna(0.0)
-            equity = (1.0 + df["close"].pct_change().fillna(0.0) * pos).cumprod()
+            #aplica reglas basadas en RL que optimizan exposición según drawdownd o sharpe
+            pos = df["exposure"].fillna(0.0) if "exposure" in df.columns else df["clean_ensemble"].fillna(0.0) #exposición ese día
+            #cumprod: valor de la cartera dia a dia 
+            equity = (1.0 + df["close"].pct_change().fillna(0.0) * pos).cumprod() #multiplca por pos para ajustar la rentabilidad segun la posicion
             df = self.rl_overlay.apply(df, equity_curve if equity_curve is not None else equity)
 
-        # 10. Final position (shifted by one bar) – FIXED VERSION
-        base = df.get("exposure_rl", df.get("exposure", df["clean_ensemble"]))
-        scaling = float(self.cfg.get("position_scaling", 1.0))
-        final_position = (base * scaling).clip(-1.0, 1.0)
+        # 10. Final position (shifted by one bar. avoids lookahead) – FIXED VERSION
+        base = df.get("exposure_rl", df.get("exposure", df["clean_ensemble"])) #señal ajustada por RL
+        scaling = float(self.cfg.get("position_scaling", 1.0)) #multiplica por un factor global
+        #señal combinada->ajustada por overlay->ajustada por vol->ajustada por RL-> escalada->desplazara para no mirar el futuro
+        final_position = (base * scaling).clip(-1.0, 1.0) 
         df["position"] = final_position.shift(1).fillna(0.0)
         df["position"] = pd.to_numeric(df["position"], errors="coerce").fillna(0.0).clip(-1.0, 1.0)
-
+        #nos dirá si la señal es plana, hay trades
+        print("XGB:", df["signal_xgboost"].describe())
+        print("ENS:", df["signal_ensemble"].describe())
+        print("POS:", df["position"].value_counts())
         return df.reset_index()
 
     # --------------------------------------------------------------------- #
@@ -193,6 +211,7 @@ class EnsembleModel:
         pd.DataFrame
             Full dataframe with all signals and final shifted position.
         """
+        #output: posición desplazada un paso, sin mirar futuro
         full_df = full_df.copy()
     
         # --------------------------------------------------------------------- #
@@ -219,7 +238,7 @@ class EnsembleModel:
         # --------------------------------------------------------------------- #
         # XGBoost predict only
         if self.xgboost_enabled and self.xgb_predictor:
-            full_df = self.xgb_predictor.predict(full_df, self.cfg)
+            full_df = self.xgb_predictor.predict(full_df, self.cfg) #probabilidades de suba o bajada
             
         # --------------------------------------------------------------------- #
         # 4. LSTM – features locked externally by WalkForwardAnalyzer (no torch.load!)
@@ -297,3 +316,4 @@ class EnsembleModel:
         full_df["position"] = pd.to_numeric(full_df["position"], errors="coerce").fillna(0.0).clip(-1.0, 1.0)
     
         return full_df.reset_index()
+   

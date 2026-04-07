@@ -98,7 +98,7 @@ ensemble:
   # VOLATILITY TARGETING
   # ---------------------------------------------------------------
   volatility_targeting:
-      enabled: true                          # Controls position sizing based on realized volatility
+      enabled: False                        # Controls position sizing based on realized volatility
       target_vol: 0.20                       # Target annual volatility
       max_leverage: 2.0 #cuanto apalancamiento se permite
       vol_lookback_bars: 60
@@ -112,7 +112,7 @@ ensemble:
   #clasificador que predice movimientos a corto plazo
   xgboost:
     enabled: true                            # Set to TRUE to enable training and signal generation
-    model_path: "models/xgb_ensemble.joblib"
+    model_path: "ensemble/models/xgb_ensemble.joblib"
     retrain: true                            # MUST BE TRUE for the initial training run.
 
     prediction_horizon_hours: 8              # Target: Price move in the next 8 hours
@@ -143,7 +143,7 @@ ensemble:
     eval_set_fraction: 0.1
 
     threshold: 0.5
-    output_type: "class"  # Output 1 or 0 (Buy/No Buy)
+    output_type: "long_short"  
     # output_type: "proba"
 
   # ---------------------------------------------------------------
@@ -151,7 +151,7 @@ ensemble:
   # ---------------------------------------------------------------
   lstm:
       enabled: true                 # <── ACTIVADO
-      model_path: "models/lstm_ensemble.pth"
+      model_path: "ensemble/models/lstm_ensemble.pth"
       retrain: true                 # Primera vez sí, luego puedes poner false
       sequence_length: 60 #cuantos pasos atrás mira el LSTM
       input_size: 16                # número aproximado de features que genera generate_features()
@@ -163,7 +163,7 @@ ensemble:
       learning_rate: 0.001
       prediction_horizon_hours: 8
       normalize: true
-      output_type: "class"          # <── IGUAL QUE XGBOOST → 0 o 1 (funciona perfecto así)
+      output_type: "long_short"         
       threshold: 0.5
 
   # ---------------------------------------------------------------
@@ -184,7 +184,7 @@ ensemble:
   # RL-STYLE RISK OVERLAY (Drawdown Control)
   # ---------------------------------------------------------------
   rl_risk_overlay:
-    enabled: true
+    enabled: false
     
     # NEW PARAMETER: Annualization factor for 1h data (approx. trading hours in a year)
     periods_per_year: 2016 
