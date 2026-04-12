@@ -88,20 +88,30 @@ def load_price_data(path: Path, symbol: str, start: str, end: str, interval: str
         end_dt = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
         result = yf.download(symbol, start=start, end=end_dt, interval=interval,
                              auto_adjust=True, progress=False, threads=False)
+        
         if result.empty:
             logger.warning("Intraday data not available. Falling back to daily.")
             result = yf.download(symbol, start=start, end=end_dt, interval="1d",
                                  auto_adjust=True, progress=False, threads=False)
+
+        # --- ARREGLO PARA COLUMNAS MULTI-INDEX (TUPLAS) ---
+        # Si yfinance devuelve ('Close', 'AAPL'), nos quedamos solo con 'Close'
+        if isinstance(result.columns, pd.MultiIndex):
+            result.columns = result.columns.get_level_values(0)
+        
         df = result.reset_index()
         os.makedirs(path.parent, exist_ok=True)
         df.to_csv(path, index=False)
         logger.info(f"Price data saved -> {path}")
 
-    # Normalize date column, asegurar datos coherentes
+    # Normalize date column
     date_cols = ["Date", "date", "Datetime", "datetime", "Timestamp"]
-    date_col = next((c for c in date_cols if c in df.columns), None)
+    # Convertimos col a string por seguridad antes de comparar
+    date_col = next((c for c in date_cols if str(c) in df.columns), None)
+    
     if date_col is None:
         raise KeyError(f"No date column found. Columns: {df.columns.tolist()}")
+    
     df = df.rename(columns={date_col: "Date"})
     df["Date"] = pd.to_datetime(df["Date"], utc=True)
 
@@ -112,13 +122,29 @@ def load_price_data(path: Path, symbol: str, start: str, end: str, interval: str
         "close": ["close", "adj close", "adjusted close"], "volume": ["volume"]
     }.items():
         for col in df.columns:
-            if any(p in col.lower() for p in patterns):
+            # Forzamos str(col) para evitar el AttributeError: 'tuple' object has no attribute 'lower'
+            column_name_str = str(col).lower()
+            if any(p in column_name_str for p in patterns):
                 col_map[col] = target
                 break
+                
     df = df.rename(columns=col_map)
     required = ["open", "high", "low", "close"]
     missing = [c for c in required if c not in df.columns]
+    
     if missing:
-        raise KeyError(f"Missing columns after normalization: {missing}")
+        # Si falla, mostramos qué columnas había para debug
+        raise KeyError(f"Missing columns after normalization: {missing}. Available: {df.columns.tolist()}")
+    # ... código anterior en gen_utils.py ...
+
+    # FORZAR CONVERSIÓN A NUMÉRICO (Evita el error de 'str' / 'str')
+    cols_to_fix = ["open", "high", "low", "close", "volume"]
+    for col in cols_to_fix:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Eliminar filas con NaNs resultantes de la conversión si las hubiera
+    df = df.dropna(subset=["close"])
 
     return df[["Date", "open", "high", "low", "close", "volume"]]
+ 

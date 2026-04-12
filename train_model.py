@@ -12,7 +12,7 @@ import os
 import numpy as np
 from collections import Counter
 from src.buy_and_hold import buy_and_hold
-from evaluation.evaluation_metrics import calculate_sharpe_ratio, calculate_max_drawdown,volatility, num_trades, total_returns, win_rate, calmar_ratio
+from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown,volatility, num_trades, total_returns, win_rate, calmar_ratio, calculate_final_net_worth
 from evaluation.agent_metrics import (
     prob_up,
     prob_max_drawdown,
@@ -215,7 +215,7 @@ simulation_df_without_sentiment = pd.DataFrame(index=df.index, columns=['net_wor
 # ------------------------
 # Buy & Hold baseline
 # ------------------------
-simulation_df_bh, metrics_bh, actions_bh = buy_and_hold(df, initial_balance=initial_balance)
+simulation_df_bh, metrics_bh, actions_bh, final_buy_hold = buy_and_hold(df, initial_balance=initial_balance)
 logger.info(f"Buy & Hold Metrics: Sharpe={metrics_bh['sharpe']:.2f}, MDD={metrics_bh['max_drawdown']:.1%}, "
             f"Vol={metrics_bh['volatility']:.1%}, Trades={metrics_bh['num_trades']}")
 
@@ -269,6 +269,8 @@ for step in range(len(df) - env.window_size):
             simulation_df_without_sentiment.loc[missing_date, 'action'] = last_action
         break
 
+
+
 # Verify alignment and data completeness
 if not simulation_df_with_sentiment.index.equals(df.index):
     logger.error("Index misalignment in simulation_df_with_sentiment")
@@ -284,8 +286,8 @@ if simulation_df_without_sentiment['net_worth'].isna().any():
     raise ValueError("Missing net_worth values in simulation_df_without_sentiment")
 logger.info("Date indices and data aligned successfully")
 
-sharpe_with_sentiment = calculate_sharpe_ratio(simulation_df_with_sentiment['net_worth'])
-sharpe_without_sentiment = calculate_sharpe_ratio(simulation_df_without_sentiment['net_worth'])
+sharpe_with_sentiment = calculate_sharpe(simulation_df_with_sentiment['net_worth'])
+sharpe_without_sentiment = calculate_sharpe(simulation_df_without_sentiment['net_worth'])
 
 mdd_with_sentiment = calculate_max_drawdown(simulation_df_with_sentiment['net_worth'])
 mdd_without_sentiment = calculate_max_drawdown(simulation_df_without_sentiment['net_worth'])
@@ -306,6 +308,7 @@ obs = env.reset()[0]
 done = False
 while not done:
     obs, _, done, _, _ = env.step(0) # avanzar sin hacer operaciones
+
 
 # Acción recomendada para mañana
 #llamamos al modelo entrenado para predecir lo de mañana
@@ -417,10 +420,27 @@ plot_results(
 )
 
 import pandas as pd
+# === FINAL NET WORTH ===
+final_nw_with = simulation_df_with_sentiment['net_worth'].iloc[-1]
+final_nw_without = simulation_df_without_sentiment['net_worth'].iloc[-1]
+final_nw_bh = simulation_df_bh['net_worth'].iloc[-1]
+
+
+
+# Convertimos a numérico y aseguramos que no haya ceros (que darían -inf)
+nw_with = simulation_df_with_sentiment['net_worth'].astype(float)
+nw_without = simulation_df_without_sentiment['net_worth'].astype(float)
+nw_bh = pd.to_numeric(simulation_df_bh['net_worth']).replace(0, 1e-6)
+
+
+returns_with = simulation_df_with_sentiment['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+returns_without = simulation_df_without_sentiment['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+returns_bh = simulation_df_bh['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
 
 # Calculamos todas las métricas para ambos modelos
 metrics_summary = {
     "Metric": [
+        "Final Net Worth",
         "Sharpe Ratio",
         "Volatility",
         "Max Drawdown",
@@ -430,8 +450,9 @@ metrics_summary = {
         "Number of trades"
     ],
     "With_Sentiment": [
-        calculate_sharpe_ratio(simulation_df_with_sentiment['net_worth']),
-        volatility(simulation_df_with_sentiment['net_worth']),
+        final_nw_with,
+        calculate_sharpe(simulation_df_with_sentiment['net_worth'], freq="1d"),
+        volatility(returns_with),            # <--- USAR RETURNS
         calculate_max_drawdown(simulation_df_with_sentiment['net_worth']),
         total_returns(simulation_df_with_sentiment['net_worth']),
         win_rate(simulation_df_with_sentiment['net_worth'], simulation_df_with_sentiment['action']),
@@ -439,8 +460,9 @@ metrics_summary = {
         num_trades(simulation_df_with_sentiment['action'])
     ],
     "Without_Sentiment": [
-        calculate_sharpe_ratio(simulation_df_without_sentiment['net_worth']),
-        volatility(simulation_df_without_sentiment['net_worth']),
+        final_nw_without,
+        calculate_sharpe(simulation_df_without_sentiment['net_worth'], freq="1d"),
+        volatility(returns_without),           # <--- USAR RETURNS
         calculate_max_drawdown(simulation_df_without_sentiment['net_worth']),
         total_returns(simulation_df_without_sentiment['net_worth']),
         win_rate(simulation_df_without_sentiment['net_worth'], simulation_df_without_sentiment['action']),
@@ -448,11 +470,12 @@ metrics_summary = {
         num_trades(simulation_df_without_sentiment['action'])
     ],
     "Buy_Hold": [
-        metrics_bh['sharpe'],
-        volatility(simulation_df_bh['net_worth']),
-        metrics_bh['max_drawdown'],
+        final_nw_bh,
+        calculate_sharpe(simulation_df_bh['net_worth'], freq="1d"),
+        volatility(returns_bh),             # <--- USAR RETURNS
+        calculate_max_drawdown(simulation_df_bh['net_worth']),
         total_returns(simulation_df_bh['net_worth']),
-        win_rate(simulation_df_bh['net_worth'],actions_bh),
+        win_rate(simulation_df_bh['net_worth'], actions_bh),
         calmar_ratio(simulation_df_bh['net_worth']),
         num_trades(actions_bh)
     ]

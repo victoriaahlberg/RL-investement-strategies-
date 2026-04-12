@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from evaluation.evaluation_metrics import calculate_sharpe_ratio, calculate_max_drawdown, volatility, num_trades
+from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown, volatility, num_trades
 import logging
 import os
 
@@ -29,13 +29,12 @@ def buy_and_hold(df: pd.DataFrame, initial_balance:float=10000):
         simulation_df.loc [date, 'net_worth']=net_worth_absolute #guardamos el net_worth diario en simulation_df
     
     #cambios entre dias consecutivos
-    daily_returns = simulation_df['net_worth'].pct_change().fillna(0.0)
-    
-    #cálculo de métricas
-    sharpe= calculate_sharpe_ratio(daily_returns)
-    mdd= calculate_max_drawdown(daily_returns)
-    vol= volatility(daily_returns)
-    trades= num_trades (daily_returns)
+    returns = np.log(simulation_df['net_worth'] / simulation_df['net_worth'].shift(1)).fillna(0.0)
+
+    sharpe= calculate_sharpe(simulation_df['net_worth'])
+    mdd= calculate_max_drawdown(simulation_df['net_worth'])
+    vol= volatility(returns)
+    trades= num_trades (simulation_df['action'])
 
     #lo guardamos aquí para que sea más fácil comparar 
     metrics ={
@@ -46,6 +45,7 @@ def buy_and_hold(df: pd.DataFrame, initial_balance:float=10000):
     }
     #reporta en consola los resultados 
     logger.info(f"Buy & Hold Metrics:Sharpe={sharpe:.2f}, MDD={mdd:.1%}, Vol={vol:.1%}, Trades={trades}")
+    final_net_worth = simulation_df['net_worth'].iloc[-1]
 
-    return simulation_df, metrics, simulation_df['action']
+    return simulation_df, metrics, simulation_df['action'], final_net_worth
  

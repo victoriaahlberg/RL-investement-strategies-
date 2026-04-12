@@ -192,7 +192,8 @@ class TradingEnv(gym.Env):
         next_price = float(self.df.iloc[next_idx]["close"])
 
         net_worth_after = self._get_net_worth(next_price)
-        reward = 100*(net_worth_after - net_worth_before) / self.initial_balance
+        self.net_worth = net_worth_after
+        reward = np.log(net_worth_after / net_worth_before)*100
 
         terminated = self.current_step >= len(self.df)
         truncated = False
@@ -214,6 +215,8 @@ class TradingEnv(gym.Env):
             f"Shares: {self.shares_held:6.0f} | Cash: {self.balance:10.2f} | "
             f"Net Worth: {net_worth:10.2f}"
         )
+
+
 
     def close(self) -> None:
         """Cleanup (no-op)."""

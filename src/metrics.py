@@ -43,23 +43,16 @@ def max_drawdown(net_worth: pd.Series) -> float:
     return drawdown.min()
 
 def annualized_return(net_worth: pd.Series) -> float:
-    """
-    Compute Compound Annual Growth Rate (CAGR).
-    
-    Args:
-        net_worth: Portfolio value over time.
-    
-    Returns:
-        Annualized return as decimal.
-    """
     if len(net_worth) < 2:
         return 0.0
-    days = (net_worth.index[-1] - net_worth.index[0]).days
-    years = days / 365.25
+    
+    # --- Cambio aquí: calculamos años por longitud de la serie ---
+    num_days = len(net_worth)
+    years = num_days / 252  # 252 días bursátiles aprox por año
+    
     if years <= 0:
         return 0.0
     return (net_worth.iloc[-1] / net_worth.iloc[0]) ** (1 / years) - 1
-
 def outperformance_vs_benchmark(rl_final: float, bh_final: float) -> float:
     """
     Compute outperformance percentage vs benchmark.

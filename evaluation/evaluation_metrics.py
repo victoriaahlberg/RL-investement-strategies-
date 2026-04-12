@@ -7,34 +7,51 @@ logger = logging.getLogger(__name__)
 
 #métricas de comparación final, después de la simulación
 
-def calculate_sharpe_ratio(net_worth: pd.Series)->float: #mencionar que asumimos un risk-free rate constante
-      #rentabilidad entre riesgo
-      if len(net_worth)<2:
-           logger.warning ("Net worth series too short to calculate Sharpe Ratio")
-           return 0.0
-      #diff te calucla los returns de cada día
-      returns= np.diff(net_worth)/net_worth [:-1]
-      mean_return= np.mean(returns)
-      std_return=np.std(returns)
-      if std_return==0:
-        logger.warning("Zero volatility in returns, sharpe ratio undefined")
+def calculate_sharpe(net_worth: pd.Series, freq: str = "1h") -> float:
+    """
+    Sharpe ratio robusto adaptado a la frecuencia.
+    """
+
+    # Limpieza
+    series = pd.to_numeric(net_worth, errors="coerce")
+    series = series.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(series) < 2:
         return 0.0
-      sharpe_ratio= mean_return/std_return *np.sqrt(252)
-      return sharpe_ratio
+
+    # Returns simples
+    returns = series.pct_change().dropna()
+
+    if returns.std() == 0:
+        return 0.0
+
+    # Factor correcto según frecuencia
+    ann_map = {
+        "1d": 252,
+        "1h": 252 * 7,
+        "1m": 252 * 7 * 60
+    }
+
+    ann_factor = ann_map.get(freq, 252)
+
+    sharpe = (returns.mean() / returns.std()) * np.sqrt(ann_factor)
+
+    return float(sharpe)
 
 def calculate_max_drawdown(net_worth: pd.Series)->float:
-   
-    cumulative_max= np.maximum.accumulate(net_worth)
-    drawdowns= (cumulative_max-net_worth)/cumulative_max
-    return drawdowns.max()
+    # Aseguramos que no haya valores menores o iguales a cero para evitar errores
+    if (net_worth <= 0).any():
+        return 1.0 
+    
+    rolling_max = net_worth.cummax()
+    drawdowns = (net_worth - rolling_max) / rolling_max
+    return float(drawdowns.min()) # Devuelve un valor negativo (ej: -0.15 para 15%)
 
-def volatility(net_worth: pd.Series) -> float:
-    if len(net_worth) < 2:
+def volatility(returns: pd.Series) -> float:
+    returns = pd.to_numeric(returns, errors='coerce').dropna()
+    if len(returns) < 2:
         return 0.0
-    # pct_change calcula (P_t - P_{t-1}) / P_{t-1}
-    returns = net_worth.pct_change().dropna()  # % cambio entre días consecutivos
-    vol = np.std(returns) * np.sqrt(252)       
-    return vol
+    return float(returns.std() * np.sqrt(252))
 
 def num_trades (actions: pd.Series) -> int:
     return np.sum(actions!=0)
@@ -93,4 +110,11 @@ def calmar_ratio(net_worth: pd.Series) -> float:
     return cagr / max_dd
 
 
+def calculate_final_net_worth(self) -> float:
+    if self.current_step == 0:
+        price = self.df.iloc[0]["close"]
+    else:
+        price = self.df.iloc[self.current_step - 1]["close"]
+
+    return self.balance + self.shares_held * price
 

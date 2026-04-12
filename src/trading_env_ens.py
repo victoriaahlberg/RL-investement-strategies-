@@ -173,6 +173,19 @@ class TradingEnv(gym.Env):
         """MinMax normalization using training slice stats."""
         normalized = (data_row - self.data_min) / self.data_range
         return np.clip(normalized, 0.0, 1.0)
+    
+    def calculate_final_net_worth(self) -> float:
+        """
+        Devuelve el net worth final del episodio.
+        Usa el último precio disponible.
+        """
+        if self.current_step == 0:
+            return self.initial_balance
+
+        # Precio del último paso válido
+        last_price = float(self.df.iloc[self.current_step - 1]["close"])
+
+        return self.balance + self.shares_held * last_price
 
     def reset(
         self, seed: Optional[int] = None, options: Optional[Dict] = None

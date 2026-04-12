@@ -15,12 +15,12 @@ stock_symbol: "AAPL"
 # stock_symbol: "SPY"
 
 data_interval: "1h"                          # Data frequency: "1d", "1h", "30m", "15m", "5m", "1m"
-start_date: "2023-12-01"
-end_date: "2025-11-15"
+start_date: "2024-12-01"
+end_date: "2026-03-15"
 
 initial_balance: 1000000                     # Starting capital for backtest
 commission_bps: 1.5                          # Commission in basis points (e.g., 1.5bps = 0.00015)
-slippage_bps: 2.0                            # Slippage in basis points
+slippage_bps: 1.5                           # Slippage in basis points
 
 # ===================================================================
 # PATHS (Matching RL structure)
@@ -89,7 +89,7 @@ ensemble:
     use_log_returns: true
     target_vol: 0.20 #volatilidad objetivo para normalizar la señal.
     max_exposure: 1.0
-    smoothing_alpha: 0.10
+    smoothing_alpha: 0.03
     min_abs_mom: 0.0
     fillna_method: ffill
     return_raw: true
@@ -98,7 +98,7 @@ ensemble:
   # VOLATILITY TARGETING
   # ---------------------------------------------------------------
   volatility_targeting:
-      enabled: False                        # Controls position sizing based on realized volatility
+      enabled: false                   # Controls position sizing based on realized volatility
       target_vol: 0.20                       # Target annual volatility
       max_leverage: 2.0 #cuanto apalancamiento se permite
       vol_lookback_bars: 60
@@ -113,7 +113,7 @@ ensemble:
   xgboost:
     enabled: true                            # Set to TRUE to enable training and signal generation
     model_path: "ensemble/models/xgb_ensemble.joblib"
-    retrain: true                            # MUST BE TRUE for the initial training run.
+    retrain: true                          # MUST BE TRUE for the initial training run.
 
     prediction_horizon_hours: 8              # Target: Price move in the next 8 hours
 
@@ -143,7 +143,7 @@ ensemble:
     eval_set_fraction: 0.1
 
     threshold: 0.5
-    output_type: "long_short"  
+    output_type: "proba"  
     # output_type: "proba"
 
   # ---------------------------------------------------------------
@@ -152,7 +152,7 @@ ensemble:
   lstm:
       enabled: true                 # <── ACTIVADO
       model_path: "ensemble/models/lstm_ensemble.pth"
-      retrain: true                 # Primera vez sí, luego puedes poner false
+      retrain: true               # Primera vez sí, luego puedes poner false
       sequence_length: 60 #cuantos pasos atrás mira el LSTM
       input_size: 16                # número aproximado de features que genera generate_features()
       hidden_size: 64
@@ -163,7 +163,7 @@ ensemble:
       learning_rate: 0.001
       prediction_horizon_hours: 8
       normalize: true
-      output_type: "long_short"         
+      output_type: "proba"         
       threshold: 0.5
 
   # ---------------------------------------------------------------
@@ -208,12 +208,12 @@ ensemble:
   # ---------------------------------------------------------------
   weighting:
     equal_risk: true                         # Use equal risk weighting across all enabled models
-    min_position_threshold: 0.0              # Minimum required signal/position magnitude to open a trade
+    min_position_threshold: 0.15             # Minimum required signal/position magnitude to open a trade
     custom_weights:
-      signal_momentum: 0.4
-      signal_xgboost: 0.3
-      signal_lstm: 0.2
-      signal_sentiment: 0.1
+      signal_momentum: 0
+      signal_xgboost: 0.4
+      signal_lstm: 0.4
+      signal_sentiment: 0.2
 
 # ===================================================================
 # LOGGING

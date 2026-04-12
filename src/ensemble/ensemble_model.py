@@ -20,7 +20,7 @@ from pathlib import Path
 
 import torch
 
-from features import generate_features
+from src.features import generate_features
 from src.models.momentum import generate_momentum_signal
 from src.models.volatility_targeting import apply_vol_target
 from src.models.xgboost_model import XGBoostPredictor
@@ -116,20 +116,30 @@ class EnsembleModel:
         # 1. Momentum
         if self.momentum_enabled:
             df = generate_momentum_signal(df, self.ensemble_cfg.get("momentum", {}))
+        split = int(len(df) * 0.8)
+        train_df = df.iloc[:split].copy()
+        test_df  = df.iloc[split:].copy()
 
-        # 2. XGBoost
-        if self.xgboost_enabled and self.xgb_predictor:
-            if self.ensemble_cfg.get("xgboost", {}).get("retrain", False):
-                split = int(len(df) * 0.8)
-                self.xgb_predictor.train(df.iloc[:split].copy(), self.cfg)
-            df = self.xgb_predictor.predict(df, self.cfg)
+        # =========================
+        # XGBoost
+        # =========================
+        if self.xgboost_enabled:
+            self.xgb_predictor.train(train_df, self.cfg)
+            test_df = self.xgb_predictor.predict(test_df, self.cfg)
+            train_df["signal_xgboost"] = 0.0  # evita NaN
 
-        # 3. LSTM
-        if self.lstm_enabled and self.lstm_predictor:
-            if self.ensemble_cfg.get("lstm", {}).get("retrain", False):
-                split = int(len(df) * 0.8)
-                self.lstm_predictor.train(df.iloc[:split].copy(), self.cfg)
-            df = self.lstm_predictor.predict(df, self.cfg)
+        # =========================
+        # LSTM
+        # =========================
+        if self.lstm_enabled:
+            self.lstm_predictor.train(train_df, self.cfg)
+            test_df = self.lstm_predictor.predict(test_df, self.cfg)
+            train_df["signal_lstm"] = 0.0  # evita NaN
+
+        # =========================
+        # Combinar solo al final
+        # =========================
+        df = pd.concat([train_df, test_df])
 
         # 4. Sentiment
         if self.sentiment_enabled and self.sentiment_model:
@@ -230,16 +240,24 @@ class EnsembleModel:
         # --------------------------------------------------------------------- #
         # 2. Momentum signal
         # --------------------------------------------------------------------- #
-        if self.momentum_enabled:
-            full_df = generate_momentum_signal(full_df, self.ensemble_cfg.get("momentum", {}))
-    
+        # ANTES: full_df["signal_momentum"] = generate_momentum_signal(full_df)
+
+        # AHORA: Usamos directamente la columna calculada en generate_features
+        if "signal_momentum" in full_df.columns:
+            # Si ya la calculamos en features.py, no hace falta llamar a la función externa
+            logger.info("Using momentum signal from features.py")
+        else:
+            # Solo si no existe, usamos la función por defecto
+            full_df["signal_momentum"] = generate_momentum_signal(full_df)
+            
         # --------------------------------------------------------------------- #
         # 3. XGBoost – train only on historical data
         # --------------------------------------------------------------------- #
         # XGBoost predict only
         if self.xgboost_enabled and self.xgb_predictor:
-            full_df = self.xgb_predictor.predict(full_df, self.cfg) #probabilidades de suba o bajada
-            
+            full_df = self.xgb_predictor.predict(full_df, self.cfg)
+
+      
         # --------------------------------------------------------------------- #
         # 4. LSTM – features locked externally by WalkForwardAnalyzer (no torch.load!)
         # --------------------------------------------------------------------- #
@@ -268,13 +286,37 @@ class EnsembleModel:
         if not signal_cols:
             full_df["signal_ensemble"] = 0.0
             full_df["clean_ensemble"] = 0.0
+        # --------------------------------------------------------------------- #
+        # 7. Combine all active signals con FILTRO DE VOLATILIDAD
+        # --------------------------------------------------------------------- #
+        signal_cols = ["signal_xgboost", "signal_lstm"]
+        if not signal_cols:
+            full_df["signal_ensemble"] = 0.0
+            full_df["clean_ensemble"] = 0.0
         else:
+            # 1. Calculamos la volatilidad de cada señal (ventana de 20 periodos)
+            # A mayor volatilidad de señal, menos confianza.
+            sig_vols = full_df[signal_cols].rolling(window=20).std().fillna(1.0)
+            
+            # 2. Obtener pesos base del YAML
             if self.custom_weights:
-                weights = np.array([self.custom_weights.get(c, 1.0) for c in signal_cols])
-                weights = weights / weights.sum() if weights.sum() > 0 else np.ones_like(weights) / len(weights)
-                full_df["signal_ensemble"] = (full_df[signal_cols] * weights).sum(axis=1)
+                base_weights = np.array([self.custom_weights.get(c, 1.0) for c in signal_cols])
             else:
-                full_df["signal_ensemble"] = full_df[signal_cols].mean(axis=1)
+                base_weights = np.ones(len(signal_cols)) / len(signal_cols)
+            
+            # 3. Combinación Dinámica
+            combined_signals = pd.Series(0.0, index=full_df.index)
+            total_dynamic_weight = pd.Series(0.0, index=full_df.index)
+            
+            for i, col in enumerate(signal_cols):
+                # Peso dinámico: peso_base / (1 + volatilidad_de_la_señal)
+                # Esto penaliza a los modelos que "saltan" mucho de -1 a 1
+                dyn_w = base_weights[i] / (1.0 + sig_vols[col])
+                combined_signals += full_df[col] * dyn_w
+                total_dynamic_weight += dyn_w
+                
+            # Normalizar para que los pesos sumen 1 en cada momento
+            full_df["signal_ensemble"] = combined_signals / total_dynamic_weight
     
             full_df["signal_ensemble"] = full_df["signal_ensemble"].clip(-1.0, 1.0)
             full_df["clean_ensemble"] = full_df["signal_ensemble"].where(
@@ -310,10 +352,16 @@ class EnsembleModel:
         # --------------------------------------------------------------------- #
         base = full_df.get("exposure_rl", full_df.get("exposure", full_df["clean_ensemble"]))
         scaling = float(self.cfg.get("position_scaling", 1.0))
-        final_position = (base * scaling).clip(-1.0, 1.0)
-    
-        full_df["position"] = final_position.shift(1).fillna(0.0)
-        full_df["position"] = pd.to_numeric(full_df["position"], errors="coerce").fillna(0.0).clip(-1.0, 1.0)
+
+        raw_position = (base * scaling).clip(-1.0, 1.0)
+
+        # Permitir que el RL y los modelos decidan la intensidad exacta
+        full_df["position"] = raw_position
+
+        # shift para evitar lookahead
+        full_df["position"] = pd.Series(full_df["position"], index=full_df.index).shift(1).fillna(0.0)
+        print("Position distribution:")
+        print(full_df["position"].value_counts())
+   
     
         return full_df.reset_index()
-   

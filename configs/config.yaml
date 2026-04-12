@@ -85,7 +85,7 @@ lstm_hidden_size: 64
 # =============================================================================
 seed: null  # null = random, int = fixed
 
-timesteps: 200000
+timesteps: 20000
 
 # === MODE: STATIC SPLIT OR WALK-FORWARD ===
 # walk_forward: true → walk-forward (1 day ahead)

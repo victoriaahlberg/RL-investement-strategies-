@@ -36,14 +36,24 @@ def _safe_fill(df: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------------------------------------
 def add_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     close = df["close"]
-    for w in [20, 40, 60]:
-        df[f"ret_{w}"] = close.pct_change(w) #retornos simples
-        df[f"log_ret_{w}"] = np.log(close / close.shift(w)) #retornos logarítmicos
-    df["mom_signal_raw"] = np.sign(df["ret_40"])  #indica la dirección del movimiento (positivo o negativo)
-    vol_40 = close.pct_change().rolling(40).std()
-    df["mom_signal"] = df["mom_signal_raw"] / vol_40.replace(0, np.nan) #señal de momento normalizada por volatilidad - reduce ruido
+    # 1. Retornos en varios horizontes
+    for w in [5, 10, 20, 50]: # Añadimos ventanas más cortas (5, 10) para reaccionar antes
+        df[f"ret_{w}"] = close.pct_change(w)
+    
+    # 2. Distancia a Medias Móviles (Crucial para NVDA)
+    df["dist_sma_20"] = close / close.rolling(20).mean() - 1.0
+    df["dist_sma_50"] = close / close.rolling(50).mean() - 1.0
+    
+    # 3. Señal combinada de Momentum (la que leerá el Ensemble)
+    # Si el precio está por encima de sus medias y el retorno es positivo -> 1
+    # Si está por debajo -> -1
+    df["signal_momentum"] = np.where(
+        (df["dist_sma_20"] > 0) & (df["ret_10"] > 0), 1.0,
+        np.where((df["dist_sma_20"] < 0) & (df["ret_10"] < 0), -1.0, 0.0)
+    )
+    
     return df
-#vol_40: volatilidad en las últimas 40 barras
+
 
 # ----------------------------------------------------------------------
 # VOLATILITY FEATURES (no future leakage)
