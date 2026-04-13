@@ -118,3 +118,18 @@ def calculate_final_net_worth(self) -> float:
 
     return self.balance + self.shares_held * price
 
+def annualized_return(net_worth: pd.Series) -> float: #porcentajr anual más o menos 
+    if len(net_worth) < 2:
+        return 0.0
+    
+    # --- Cambio aquí: calculamos años por longitud de la serie ---
+    num_days = len(net_worth)
+    years = num_days / 252  # 252 días bursátiles aprox por año
+    
+    if years <= 0:
+        return 0.0
+    return (net_worth.iloc[-1] / net_worth.iloc[0]) ** (1 / years) - 1
+
+def count_trades(position: pd.Series) -> int:
+    pos = position.fillna(0)
+    return int((pos.diff().abs() > 0).sum())

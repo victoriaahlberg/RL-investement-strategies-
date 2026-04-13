@@ -208,7 +208,7 @@ ensemble:
   # ---------------------------------------------------------------
   weighting:
     equal_risk: true                         # Use equal risk weighting across all enabled models
-    min_position_threshold: 0.15             # Minimum required signal/position magnitude to open a trade
+    min_position_threshold: 0.05             # Minimum required signal/position magnitude to open a trade
     custom_weights:
       signal_momentum: 0
       signal_xgboost: 0.4

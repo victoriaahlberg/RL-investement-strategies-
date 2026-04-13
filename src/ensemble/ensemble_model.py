@@ -311,7 +311,7 @@ class EnsembleModel:
             for i, col in enumerate(signal_cols):
                 # Peso dinámico: peso_base / (1 + volatilidad_de_la_señal)
                 # Esto penaliza a los modelos que "saltan" mucho de -1 a 1
-                dyn_w = base_weights[i] / (1.0 + sig_vols[col])
+                dyn_w = base_weights[i] / (1.0 + sig_vols[col]*0.5)
                 combined_signals += full_df[col] * dyn_w
                 total_dynamic_weight += dyn_w
                 
@@ -360,8 +360,18 @@ class EnsembleModel:
 
         # shift para evitar lookahead
         full_df["position"] = pd.Series(full_df["position"], index=full_df.index).shift(1).fillna(0.0)
-        print("Position distribution:")
+        print("\n========== DEBUG ENSEMBLE ==========")
+
+        print("\nSignal ensemble stats:")
+        print(full_df["signal_ensemble"].describe())
+
+        print("\nClean ensemble distribution:")
+        print(full_df["clean_ensemble"].value_counts())
+
+        print("\nPosition distribution:")
         print(full_df["position"].value_counts())
+
+        print("===================================\n")
    
     
         return full_df.reset_index()

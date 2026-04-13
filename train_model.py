@@ -12,7 +12,7 @@ import os
 import numpy as np
 from collections import Counter
 from src.buy_and_hold import buy_and_hold
-from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown,volatility, num_trades, total_returns, win_rate, calmar_ratio, calculate_final_net_worth
+from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown,volatility, num_trades, total_returns, win_rate, calmar_ratio, calculate_final_net_worth, annualized_return
 from evaluation.agent_metrics import (
     prob_up,
     prob_max_drawdown,
@@ -447,7 +447,8 @@ metrics_summary = {
         "Total Return",
         "Win Rate",
         "Calmar Ratio",
-        "Number of trades"
+        "Number of trades",
+        "Annualized returns"
     ],
     "With_Sentiment": [
         final_nw_with,
@@ -457,7 +458,8 @@ metrics_summary = {
         total_returns(simulation_df_with_sentiment['net_worth']),
         win_rate(simulation_df_with_sentiment['net_worth'], simulation_df_with_sentiment['action']),
         calmar_ratio(simulation_df_with_sentiment['net_worth']),
-        num_trades(simulation_df_with_sentiment['action'])
+        num_trades(simulation_df_with_sentiment['action']),
+        annualized_return(simulation_df_with_sentiment['net_worth'])
     ],
     "Without_Sentiment": [
         final_nw_without,
@@ -467,7 +469,8 @@ metrics_summary = {
         total_returns(simulation_df_without_sentiment['net_worth']),
         win_rate(simulation_df_without_sentiment['net_worth'], simulation_df_without_sentiment['action']),
         calmar_ratio(simulation_df_without_sentiment['net_worth']),
-        num_trades(simulation_df_without_sentiment['action'])
+        num_trades(simulation_df_without_sentiment['action']),
+        annualized_return(simulation_df_without_sentiment['net_worth'])
     ],
     "Buy_Hold": [
         final_nw_bh,
@@ -477,7 +480,8 @@ metrics_summary = {
         total_returns(simulation_df_bh['net_worth']),
         win_rate(simulation_df_bh['net_worth'], actions_bh),
         calmar_ratio(simulation_df_bh['net_worth']),
-        num_trades(actions_bh)
+        num_trades(actions_bh),
+        annualized_return(simulation_df_bh['net_worth'])
     ]
 }
 

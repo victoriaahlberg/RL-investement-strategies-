@@ -18,9 +18,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import sys
-from src.metrics import max_drawdown, annualized_return
-from evaluation.evaluation_metrics import calculate_sharpe
+from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown,volatility, count_trades, total_returns, win_rate, calmar_ratio, calculate_final_net_worth, annualized_return
 from src.features import generate_features
+from src.buy_and_hold import buy_and_hold
+
 # --------------------------------------------------------------------------- #
 # Project root setup (relative paths → portable on GitHub)
 # --------------------------------------------------------------------------- #
@@ -197,6 +198,9 @@ class WalkForwardAnalyzer:
 
             full_df = pd.merge(price_df, sent_df[["Date", "sentiment"]], on="Date", how="left")
             full_df["sentiment"] = full_df["sentiment"].ffill().fillna(0.0).astype("float32")
+           
+# Ahora sí, después de generar features, quitamos NaNs y ponemos el índice
+            
             full_df = full_df.dropna(subset=["close"]).sort_values("Date").set_index("Date")
 
             # En lugar de usar .loc[:current_end], usamos una máscara booleana 
@@ -234,6 +238,7 @@ class WalkForwardAnalyzer:
                 # Train models (only once per step)
                 if ensemble.xgboost_enabled:
                     ensemble.xgb_predictor.train(train_df, self.cfg)
+
 
                 if ensemble.lstm_enabled:
                     fixed_cols = self.fixed_lstm_features if step_idx > 1 else None
@@ -337,27 +342,75 @@ class WalkForwardAnalyzer:
         df_final['strat_returns'] -= (trades * comm_slip)
 
         # Curvas de Capital
-        df_final['cum_strategy'] = (1 + df_final['strat_returns']).cumprod()
-        df_final['cum_buy_hold'] = (df_final['close'] / df_final['close'].iloc[0])
-        df_final['net_worth_strategy'] = df_final['cum_strategy'] * 10000
-        df_final['net_worth_bh'] = df_final['cum_buy_hold'] * 10000
+       
 
-        # --- MÉTRICAS FINALES ---
-        ann_factor = np.sqrt(252 * 7) # Ajuste para datos de 1 hora
-        sharpe_strat = (df_final['strat_returns'].mean() / df_final['strat_returns'].std() * ann_factor) if df_final['strat_returns'].std() != 0 else 0
-        mdd_strat = max_drawdown(df_final['net_worth_strategy'])
-        ret_ann_strat = annualized_return(df_final['net_worth_strategy'])
+# 1. Ejecutamos tu implementación profesional de acciones enteras
+        df_bh_raw, metrics_bh, actions_bh_oficial, final_nw_bh = buy_and_hold(df_final, initial_balance=10000)
+
+# Ahora sí, extraemos la columna 'net_worth' del primer elemento (el DataFrame)
+        df_final['net_worth_bh'] = df_bh_raw['net_worth'].values
+        # 2. Lo añadimos al dataframe del ensemble para la gráfica
+        df_final['cum_buy_hold'] = df_final['net_worth_bh']
+        df_final['cum_strategy'] = (1 + df_final['strat_returns']).cumprod()
+        df_final['net_worth_strategy'] = df_final['cum_strategy'] * 10000
+        
+       # --- MÉTRICAS FINALES CONSOLIDADAS ---
+        # Asegúrate de haber importado estas funciones al principio del archivo:
+        # from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown, annualized_return, total_returns, volatility, calmar_ratio, win_rate
+
+        # Definimos la frecuencia (cámbiala a "1d" si tus datos no son de 1 hora)
+        FRECUENCIA = "1h"
+
+
+        # 1. Extraemos las series de Net Worth y Acciones
+        nw_ensemble = df_final['net_worth_strategy']
+        nw_bh = df_final['net_worth_bh']
+        # Asumiendo que guardas las acciones del ensemble en una columna
+        actions_ensemble = df_final['strategy_action'] if 'strategy_action' in df_final.columns else pd.Series(0, index=df_final.index)
+        # Para B&H la acción es 1 el primer día y 0 el resto (puedes generarla así para win_rate)
+        actions_bh = pd.Series(0, index=df_final.index)
+        actions_bh.iloc[0] = 1 
+
+        trades_ensemble = count_trades(df_final['position'])
+        trades_bh = count_trades(actions_bh)
+
 
         metrics_summary = {
-            "Metric": ["Final Net Worth", "Sharpe Ratio", "Max Drawdown", "Annual Return"],
-            "Ensemble": [df_final['net_worth_strategy'].iloc[-1], sharpe_strat, mdd_strat, ret_ann_strat],
-            "Buy_Hold": [df_final['net_worth_bh'].iloc[-1], 
-                         (df_final['returns'].mean()/df_final['returns'].std()*ann_factor), 
-                         max_drawdown(df_final['net_worth_bh']), 
-                         annualized_return(df_final['net_worth_bh'])]
+            "Metric": [
+                "Final Net Worth", 
+                "Sharpe Ratio", 
+                "Max Drawdown", 
+                "Total Return",  
+                "Volatility",
+                "Calmar Ratio",
+                "Annualized Return",
+                "Number of trades"
+            ],
+            "Ensemble": [
+                nw_ensemble.iloc[-1],
+                calculate_sharpe(nw_ensemble, freq=FRECUENCIA),
+                calculate_max_drawdown(nw_ensemble),
+                total_returns(nw_ensemble),
+                volatility(nw_ensemble.pct_change().dropna()),
+                calmar_ratio(nw_ensemble),
+                annualized_return(nw_ensemble),
+                trades_ensemble
+
+            ],
+            "Buy_Hold": [
+                nw_bh.iloc[-1],
+                calculate_sharpe(nw_bh, freq=FRECUENCIA),
+                calculate_max_drawdown(nw_bh),
+                total_returns(nw_bh),
+                volatility(nw_bh.pct_change().dropna()),
+                calmar_ratio(nw_bh),
+                annualized_return(nw_bh),
+                trades_bh
+            ]
         }
+
         metrics_df = pd.DataFrame(metrics_summary)
-        print("\n" + "="*50 + "\nRESUMEN DE RENDIMIENTO FINAL\n" + "="*50)
+        print("\n" + "="*60 + "\nRESUMEN DE RENDIMIENTO FINAL (CONSOLIDADO)\n" + "="*60)
         print(metrics_df.to_string(index=False))
 
         # --- GENERACIÓN DE GRÁFICAS ---
@@ -365,12 +418,28 @@ class WalkForwardAnalyzer:
         fig, axes = plt.subplots(4, 1, figsize=(15, 18), sharex=True)
 
         # Panel 1: Precio y Trades
-        axes[0].plot(df_final["Date"], df_final["close"], color='gray', alpha=0.4, label="Precio")
-        buy_idx = (df_final['position'] > 0) & (df_final['position'].shift(1) <= 0)
-        sell_idx = (df_final['position'] <= 0) & (df_final['position'].shift(1) > 0)
-        axes[0].scatter(df_final.loc[buy_idx, "Date"], df_final.loc[buy_idx, "close"], marker="^", color="green", s=100, label="BUY")
-        axes[0].scatter(df_final.loc[sell_idx, "Date"], df_final.loc[sell_idx, "close"], marker="v", color="red", s=100, label="SELL")
-        axes[0].set_title("Panel 1: Precio y Ejecución de Señales")
+        # --- PANEL 1: PRECIO + TRADES CORRECTOS ---
+        axes[0].plot(df_final["Date"], df_final["close"],
+                    color='gray', alpha=0.4, label="Precio")
+
+        pos = df_final["position"]
+
+        # detectar cambios reales de posición (NO solo >0 / <=0)
+        prev_pos = pos.shift(1).fillna(0)
+
+        buy_idx = (prev_pos <= 0) & (pos > 0)
+        sell_idx = (prev_pos >= 0) & (pos < 0)
+
+        # dibujar trades
+        axes[0].scatter(df_final.loc[buy_idx, "Date"],
+                        df_final.loc[buy_idx, "close"],
+                        marker="^", color="green", s=100, label="BUY")
+
+        axes[0].scatter(df_final.loc[sell_idx, "Date"],
+                        df_final.loc[sell_idx, "close"],
+                        marker="v", color="red", s=100, label="SELL")
+
+        axes[0].set_title("Panel 1: Precio y Ejecución de Trades (correcto)")
         axes[0].legend()
 
         # Panel 2: Señales de Modelos
