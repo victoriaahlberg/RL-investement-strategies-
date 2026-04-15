@@ -454,9 +454,13 @@ class WalkForwardAnalyzer:
         axes[2].set_title("Panel 3: Exposición Final (Control de Riesgo)")
 
         # Panel 4: Rendimiento
-        axes[3].plot(df_final["Date"], df_final['cum_buy_hold'], color="black", linestyle="--", label="Buy & Hold")
-        axes[3].plot(df_final["Date"], df_final['cum_strategy'], color="green", linewidth=2, label="Estrategia")
-        axes[3].set_title("Panel 4: Crecimiento del Capital (Relativo)")
+        axes[3].plot(df_final["Date"], df_final['net_worth_bh'], 
+             color="black", linestyle="--", label="Buy & Hold ($)")
+        axes[3].plot(df_final["Date"], df_final['net_worth_strategy'], 
+                    color="green", linewidth=2, label="Estrategia ($)")
+
+        axes[3].set_title("Panel 4: Evolución del Valor de la Cartera (Net Worth)")
+        axes[3].set_ylabel("Capital ($)") # Añadir etiqueta de moneda para claridad
         axes[3].legend()
 
         plt.tight_layout()

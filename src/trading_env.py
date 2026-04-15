@@ -69,6 +69,7 @@ class TradingEnv(gym.Env):
         self.balance = self.initial_balance
         self.shares_held = 0.0
         self.current_step = 0
+        self.commission = 0.0015
 
         
         #Número de features de mercado por día
@@ -109,7 +110,7 @@ class TradingEnv(gym.Env):
 
     def _get_observation(self) -> np.ndarray:
         #construye el vector de estado que recibe el estado
-        end = self.current_step + 1
+        end = self.current_step 
         start = max(0, end - self.window_size)
         window = self.df.iloc[start:end]
         n_rows = len(window)
@@ -175,25 +176,32 @@ class TradingEnv(gym.Env):
         reward = 0.0
 
         # Ejecutar acción
-        if action == 1:  # Buy
-            shares_to_buy = self.balance // current_price
+        if action==1: #buy
+        # Invertimos casi todo el balance, dejando margen para la comisión
+            shares_to_buy = self.balance // (current_price * (1 + self.commission))
             cost = shares_to_buy * current_price
             self.shares_held += shares_to_buy
-            self.balance -= cost
+            # Restamos el coste de las acciones MÁS la comisión
+            self.balance -= (cost * (1 + self.commission))
         elif action == 2:  # Sell
             revenue = self.shares_held * current_price
-            self.balance += revenue
+            self.balance += (revenue * (1 - self.commission))
             self.shares_held = 0.0
 
         # Avanzar al siguiente día
         self.current_step += 1
-        #para clcular  el reward
-        next_idx = min(self.current_step, len(self.df) - 1)
-        next_price = float(self.df.iloc[next_idx]["close"])
+        #caluclamos reward
+        if self.current_step < len(self.df):
+            new_price = float(self.df.iloc[self.current_step]["close"])
+        else:
+            new_price = current_price # Caso fin de dataset
 
-        net_worth_after = self._get_net_worth(next_price)
+        net_worth_after = self._get_net_worth(new_price)
         self.net_worth = net_worth_after
-        reward = np.log(net_worth_after / net_worth_before)*100
+        
+        # REWARD: Diferencia porcentual simple o logarítmica
+        # Multiplicar por 100 ayuda a la convergencia del PPO (escalado de reward)
+        reward = ((net_worth_after - net_worth_before) / net_worth_before) * 100
 
         terminated = self.current_step >= len(self.df)
         truncated = False
