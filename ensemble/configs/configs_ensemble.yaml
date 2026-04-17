@@ -8,13 +8,13 @@
 # GENERAL SETTINGS
 # ===================================================================
 verbose: 1                                   # 0 = silent, 1 = normal, 2 = debug
-# stock_symbol: "NVDA"
-# stock_symbol: "TSLA"
+#stock_symbol: "NVDA"
+#stock_symbol: "TSLA"
 stock_symbol: "AAPL"
-# stock_symbol: "META"
+#stock_symbol: "META"
 # stock_symbol: "SPY"
 
-data_interval: "1h"                          # Data frequency: "1d", "1h", "30m", "15m", "5m", "1m"
+data_interval: "1d"                          # Data frequency: "1d", "1h", "30m", "15m", "5m", "1m"
 start_date: "2024-12-01"
 end_date: "2026-03-15"
 
@@ -98,7 +98,7 @@ ensemble:
   # VOLATILITY TARGETING
   # ---------------------------------------------------------------
   volatility_targeting:
-      enabled: false                   # Controls position sizing based on realized volatility
+      enabled: true          # Controls position sizing based on realized volatility
       target_vol: 0.20                       # Target annual volatility
       max_leverage: 2.0 #cuanto apalancamiento se permite
       vol_lookback_bars: 60
@@ -152,12 +152,12 @@ ensemble:
   lstm:
       enabled: true                 # <── ACTIVADO
       model_path: "ensemble/models/lstm_ensemble.pth"
-      retrain: true               # Primera vez sí, luego puedes poner false
-      sequence_length: 60 #cuantos pasos atrás mira el LSTM
+      retrain: true           # Primera vez sí, luego puedes poner false
+      sequence_length: 24  #cuantos pasos atrás mira el LSTM
       input_size: 16                # número aproximado de features que genera generate_features()
-      hidden_size: 64
-      num_layers: 2
-      dropout: 0.2
+      hidden_size: 32
+      num_layers: 1
+      dropout: 0.4
       epochs: 20
       batch_size: 32
       learning_rate: 0.001
@@ -207,13 +207,13 @@ ensemble:
   # WEIGHTING LOGIC
   # ---------------------------------------------------------------
   weighting:
-    equal_risk: true                         # Use equal risk weighting across all enabled models
-    min_position_threshold: 0.05             # Minimum required signal/position magnitude to open a trade
+    equal_risk: false                        # Use equal risk weighting across all enabled models
+    min_position_threshold: 0.05        # Minimum required signal/position magnitude to open a trade
     custom_weights:
-      signal_momentum: 0
-      signal_xgboost: 0.4
-      signal_lstm: 0.4
-      signal_sentiment: 0.2
+      signal_momentum: 0.4
+      signal_xgboost: 0.3
+      signal_lstm: 0.3
+      signal_sentiment: 0.1
 
 # ===================================================================
 # LOGGING

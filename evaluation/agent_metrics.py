@@ -122,7 +122,7 @@ def ddi(high: pd.Series, low: pd.Series, close: pd.Series, horizon: int=14)->pd.
     
     return ddi_series.fillna(0)
 
-def rollling_volatility(prices:pd.Series, horizon: int=21)->pd.Series:
+def rolling_volatility(prices:pd.Series, horizon: int=21)->pd.Series:
     returns = prices.pct_change().fillna(0)
 
     #el rolling window significa que para cada día t, vamos a mirar los últimos window valores de retorno

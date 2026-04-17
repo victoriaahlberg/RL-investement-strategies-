@@ -259,21 +259,54 @@ class WalkForwardAnalyzer:
                     )
 
                 # Pure out-of-sample prediction (no training inside!)
-                result_df = ensemble.predict_out_of_sample(full_df=full_df).set_index("Date")
+                # ----------------------------
+                # PERFORMANCE OOS (CORRECTO)
+                result_df = ensemble.predict_out_of_sample(full_df)
+                result_df = result_df.copy()
+                # ----------------------------
+                
+                if "Date" in result_df.columns:
+                    result_df = result_df.set_index("Date")
+                result_df = result_df.sort_index()
 
-                # Performance calculation
-                pos = result_df["position"].shift(1).fillna(0.0)
+                pos = result_df["position"].fillna(0.0)
+
+                market_ret = result_df["close"].pct_change().fillna(0.0)
+                strategy_ret = market_ret * pos.shift(1).fillna(0.0)
+
                 comm = self.cfg.get("commission_bps", 1.5) / 10_000
                 slip = self.cfg.get("slippage_bps", 2.0) / 10_000
-                cost = pos.diff().abs().fillna(pos.abs()) * (comm + slip)
-                strategy_ret = result_df["close"].pct_change().fillna(0.0) * pos - cost
-                equity = (1 + strategy_ret).cumprod()
-                oos_equity = equity.loc[test_start:test_end]
 
-                # Guardamos el detalle de este mes para la gráfica final
+                # costes correctos (solo cambios de posición)
+                trades = (pos != pos.shift(1)).astype(int)
+                cost = trades * (comm + slip)
+
+                # slice OOS correcto
+                oos_ret = strategy_ret.loc[test_start:test_end]
+
+                # equity OOS
+                oos_equity = (1 + oos_ret).cumprod()
+
+                # métricas
+                ret_pct = 0.0
+                sharpe = 0.0
+
+                if len(oos_equity) >= 2:
+                    ret_pct = (oos_equity.iloc[-1] / oos_equity.iloc[0] - 1) * 100
+
+                    std = oos_ret.std()
+                    if std > 0:
+                        sharpe = (oos_ret.mean() / std) * np.sqrt(252)
+
+                # logging
+                self.logger.info(
+                    "→ OOS Return: %+8.2f%% | Sharpe: %6.3f | Period: %s → %s",
+                    ret_pct, sharpe, test_start.date(), test_end.date()
+                )
+
+                # guardar detalle OOS
                 oos_detail = result_df.loc[test_start:test_end].copy()
                 all_oos_details.append(oos_detail)
-
                 ret_pct = sharpe = 0.0
                 if len(oos_equity) >= 10:
                     ret_pct = (oos_equity.iloc[-1] / oos_equity.iloc[0] - 1) * 100
@@ -328,50 +361,55 @@ class WalkForwardAnalyzer:
 
                 # --- VERIFICAR SHARPES INDIVIDUALES ---
         signals = ['signal_momentum', 'signal_xgboost', 'signal_lstm', 'signal_ensemble']
-        ann_factor = np.sqrt(252*7)  # Ajusta según tu intervalo de datos
+        ann_factor = np.sqrt(252)  # Ajusta según tu intervalo de datos
         for sig in signals:
             if sig in df_final.columns:
-                pos = df_final[sig].shift(1).fillna(0.0)
+                pos = df_final[sig].fillna(0.0)
                 strat_ret = df_final['returns'] * pos
                 sharpe = (strat_ret.mean() / strat_ret.std() * ann_factor) if strat_ret.std() != 0 else 0
                 print(f"{sig:15s} | Sharpe (before overlays) : {sharpe:.3f}")
         
         # Aplicar costes de transacción (Comisión + Deslizamiento)
         comm_slip = (self.cfg.get("commission_bps", 1.5) + self.cfg.get("slippage_bps", 2.0)) / 10000
-        trades = df_final['position'].diff().abs().fillna(0)
-        df_final['strat_returns'] -= (trades * comm_slip)
+        trades = (df_final['position'] != df_final['position'].shift(1)).astype(int).fillna(0)
+        df_final["strat_returns"] -= trades * comm_slip
 
         # Curvas de Capital
        
 
 # 1. Ejecutamos tu implementación profesional de acciones enteras
-        df_bh_raw, metrics_bh, actions_bh_oficial, final_nw_bh = buy_and_hold(df_final, initial_balance=10000)
+        df_bh_raw, metrics_bh, _, _ = buy_and_hold(df_final.copy(), initial_balance=10000)
+
+        df_bh_raw = df_bh_raw.reset_index(drop=True)
+        df_final = df_final.reset_index(drop=True)
+
+        df_final['net_worth_bh'] = df_bh_raw['net_worth']
 
 # Ahora sí, extraemos la columna 'net_worth' del primer elemento (el DataFrame)
-        df_final['net_worth_bh'] = df_bh_raw['net_worth'].values
         # 2. Lo añadimos al dataframe del ensemble para la gráfica
         df_final['cum_buy_hold'] = df_final['net_worth_bh']
         df_final['cum_strategy'] = (1 + df_final['strat_returns']).cumprod()
-        df_final['net_worth_strategy'] = df_final['cum_strategy'] * 10000
+        df_final['net_worth_strategy'] = 10000 * (1 + df_final['strat_returns']).cumprod()
         
        # --- MÉTRICAS FINALES CONSOLIDADAS ---
         # Asegúrate de haber importado estas funciones al principio del archivo:
         # from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown, annualized_return, total_returns, volatility, calmar_ratio, win_rate
 
         # Definimos la frecuencia (cámbiala a "1d" si tus datos no son de 1 hora)
-        FRECUENCIA = "1h"
+        FRECUENCIA = "1d"
 
 
         # 1. Extraemos las series de Net Worth y Acciones
         nw_ensemble = df_final['net_worth_strategy']
         nw_bh = df_final['net_worth_bh']
+        pos = df_final["position"].shift(1).fillna(0.0)
         # Asumiendo que guardas las acciones del ensemble en una columna
         actions_ensemble = df_final['strategy_action'] if 'strategy_action' in df_final.columns else pd.Series(0, index=df_final.index)
         # Para B&H la acción es 1 el primer día y 0 el resto (puedes generarla así para win_rate)
         actions_bh = pd.Series(0, index=df_final.index)
         actions_bh.iloc[0] = 1 
 
-        trades_ensemble = count_trades(df_final['position'])
+        trades_ensemble = (df_final["position"].diff().abs() > 0).sum()
         trades_bh = count_trades(actions_bh)
 
 

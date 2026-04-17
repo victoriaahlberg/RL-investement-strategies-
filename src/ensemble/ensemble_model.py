@@ -289,7 +289,7 @@ class EnsembleModel:
         # --------------------------------------------------------------------- #
         # 7. Combine all active signals con FILTRO DE VOLATILIDAD
         # --------------------------------------------------------------------- #
-        signal_cols = ["signal_xgboost", "signal_lstm"]
+        signal_cols = self._active_signal_cols(full_df)
         if not signal_cols:
             full_df["signal_ensemble"] = 0.0
             full_df["clean_ensemble"] = 0.0
@@ -350,16 +350,29 @@ class EnsembleModel:
         # --------------------------------------------------------------------- #
         # 11. Final position – shifted one bar forward (no look-ahead)
         # --------------------------------------------------------------------- #
-        base = full_df.get("exposure_rl", full_df.get("exposure", full_df["clean_ensemble"]))
+        # -----------------------------
+        # FINAL POSITION (CORRECTO)
+        # -----------------------------
+
+        base = full_df.get(
+            "exposure_rl",
+            full_df.get("exposure", full_df["clean_ensemble"])
+        )
+
         scaling = float(self.cfg.get("position_scaling", 1.0))
 
-        raw_position = (base * scaling).clip(-1.0, 1.0)
+        # construir posición RAW primero (IMPORTANTE: definirla antes de usarla)
+        raw_position = full_df.get("exposure_rl", full_df.get("exposure", full_df["clean_ensemble"]))
+        scaling = float(self.cfg.get("position_scaling", 1.0))
 
-        # Permitir que el RL y los modelos decidan la intensidad exacta
-        full_df["position"] = raw_position
+        raw_position = np.sign(raw_position * scaling)
 
-        # shift para evitar lookahead
-        full_df["position"] = pd.Series(full_df["position"], index=full_df.index).shift(1).fillna(0.0)
+        full_df["position"] = raw_position.astype(int)
+        # shift anti lookahead
+        full_df["position"] = pd.Series(raw_position, index=full_df.index).shift(1).fillna(0.0)
+
+        # limpieza final
+        full_df["position"] = pd.to_numeric(full_df["position"], errors="coerce").fillna(0.0)
         print("\n========== DEBUG ENSEMBLE ==========")
 
         print("\nSignal ensemble stats:")

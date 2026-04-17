@@ -16,7 +16,7 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 # En src/features/__init__.py
-from evaluation.agent_metrics import macd, relative_strength, ddi, rollling_volatility, signal_entropy
+from evaluation.agent_metrics import macd, relative_strength, ddi, rolling_volatility, signal_entropy, prob_up, prob_max_drawdown
 logger = logging.getLogger(__name__)
 
 
@@ -157,17 +157,17 @@ def add_future_features(df: pd.DataFrame) -> pd.DataFrame:
 
     logger.info("Added future-looking features (ret_8h_fwd, vol_8h_fwd, etc.) — RESEARCH MODE ONLY")
     return df
-def add_agent_based_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Usamos las funciones de agent_metrics.py
 
-    df["agent_macd"] = macd(df["close"])
-    df["agent_rsi"] = relative_strength(df["close"])
-    df["agent_ddi"] = ddi(df["high"], df["low"], df["close"])
-    df["agent_entropy"] = signal_entropy(df["close"])
-    df["agent_vol_roll"] = rollling_volatility(df["close"])
-    
-    # También podemos añadir derivadas que ayudan al XGBoost
-    df["macd_slope"] = df["agent_macd"].diff() 
+def add_agent_based_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    # No añadas solo 3, añade el motor completo del agente:
+    df['prob_up'] = prob_up(df['close'])
+    df['entropy'] = signal_entropy(df['close'])
+    df['ddi'] = ddi(df['high'], df['low'], df['close'])
+    df['rsi_agente'] = relative_strength(df['close'])
+    df['vol_agente'] = rolling_volatility(df['close'])
+    df['Prob max drawdown']=prob_max_drawdown(df['close'])
+    df['MACD']=macd(df['close'])
     return df
 
 # ----------------------------------------------------------------------

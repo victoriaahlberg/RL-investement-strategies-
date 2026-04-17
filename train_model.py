@@ -20,7 +20,7 @@ from evaluation.agent_metrics import (
     macd,
     relative_strength,
     ddi,
-    rollling_volatility
+    rolling_volatility
 
 )
 
@@ -82,13 +82,27 @@ train_test_split = config.get("train_test_split", 0.7)
 replicates = config.get("replicates", 1)
 
 
-# === DATA PATH ===
+# === DATA PATH (CORREGIDO) ===
+# === DATA PATH (CORREGIDO) ===
 raw_csv = os.path.join(raw_dir, f"{symbol}_raw.csv")
 processed_csv = os.path.join(processed_dir, f"{symbol}_sentiment_{sentiment_source if sentiment_mode == 'individual' else 'combined'}.csv")
-data_path = processed_csv if os.path.exists(processed_csv) else raw_csv
-logger.info(f"Using data: {data_path}")
+ensemble_csv = os.path.join(processed_dir, f"{symbol}_hybrid_ready.csv")
 
+# Selección con prioridad: 1. Ensemble, 2. Sentiment, 3. Raw
+if os.path.exists(ensemble_csv):
+    data_path = ensemble_csv
+    logger.info(f"Using Hybrid Ensemble data: {data_path}")
+elif os.path.exists(processed_csv):
+    data_path = processed_csv
+    logger.info(f"Using Sentiment data: {data_path}")
+else:
+    data_path = raw_csv
+    logger.warning("No Hybrid or Sentiment CSV found. Using RAW data.")
+
+# Cargamos el dataframe una sola vez
 df = pd.read_csv(data_path)
+logger.info(f"Successfully loaded {len(df)} rows from: {data_path}")
+
 
 # Detectar columna de fecha automáticamente
 if 'date' in df.columns:
@@ -127,7 +141,7 @@ df["signal_entropy"] = signal_entropy(df["close"], horizon=1)
 df["macd"] = macd(df["close"])          # MACD diario
 df["rsi"] = relative_strength(df["close"])
 df["ddi"] = ddi(df["high"], df["low"], df["close"])
-df["rolling_vol"] = rollling_volatility(df["close"])
+df["rolling_vol"] = rolling_volatility(df["close"])
 #rellenamos con 0 al principio
 df[["prob_up","prob_max_drawdown","signal_entropy"]] = (df[["prob_up","prob_max_drawdown","signal_entropy"]].fillna(0.0))
 df[["macd","rsi","ddi","rolling_vol"]] = df[["macd","rsi","ddi","rolling_vol"]].fillna(0.0) 
@@ -143,26 +157,30 @@ test_df = df.iloc[split_index:].copy()
 logger.info(f"Entrenamiento: {len(train_df)} días ({train_df.index.min()} a {train_df.index.max()})")
 logger.info(f"Test/Evaluación: {len(test_df)} días ({test_df.index.min()} a {test_df.index.max()})")
 
+
 # Initialize environments
 vec_env_with_sentiment = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=True),
+    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=True),
     n_envs=1
 )
-
 vec_env_without_sentiment = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=False),
+    lambda: TradingEnv(train_df, use_sentiment=False, use_ensemble=False),
     n_envs=1
 )
 
-env_without_sentiment = lambda: TradingEnv(train_df, use_sentiment=False)
-logger.info("Environments initialized")
+vec_env_rl_base = make_vec_env(
+    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=False),
+    n_envs=1
+)
 
 # Set device (MPS or CPU)
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 logger.info(f"Using device: {device}")
 
 # --- Train PPO model with sentiment ---
-model_path_with = "models/trading_model_with_sentiment"
+# --- CAMBIO 3: Nombres descriptivos ---
+model_path_with = "models/ppo_expert_ensemble"   # Con todo
+model_path_without = "models/ppo_base_sentiment" # Solo sentimiento
 
 if os.path.exists(model_path_with + ".zip"):
     # Cargar modelo previo y continuar entrenamiento
@@ -190,9 +208,9 @@ logger.info(f"Model with sentiment saved to {model_path_with}")
 
 # Train PPO model without sentiment
 
-model_path_without = "models/trading_model_without_sentiment"
 #caso: ya existe un modelo
 
+# 🚨 IMPORTANTE: no reutilizar modelo si cambia el observation space
 if os.path.exists(model_path_without + ".zip"):
     #cargamos el modelo previamente entrenado
     model_without_sentiment = PPO.load(model_path_without)
@@ -217,6 +235,25 @@ else:
 model_without_sentiment.save(model_path_without)
 logger.info(f"Model without sentiment saved to {model_path_without}")
 
+model_path_base = "models/ppo_rl_base"
+
+if os.path.exists(model_path_base + ".zip"):
+    model_base = PPO.load(model_path_base)
+    model_base.set_env(vec_env_rl_base)
+    model_base.learn(total_timesteps=100_000)
+else:
+    model_base = PPO(
+        "MlpPolicy",
+        vec_env_rl_base,
+        verbose=1,
+        device=device,
+        learning_rate=0.0001,
+        clip_range=0.2,
+        ent_coef=0.01
+    )
+    model_base.learn(total_timesteps=config['timesteps'])
+
+model_base.save(model_path_base)
 
 # Initialize simulation DataFrames with Date as index
 simulation_df_with_sentiment = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
@@ -233,7 +270,7 @@ logger.info(f"Buy & Hold Metrics: Sharpe={metrics_bh['sharpe']:.2f}, MDD={metric
 
 #Aquí ya no entrenamos, evaluamos 
 # --- SIMULACIÓN CORREGIDA EN train_model.py ---
-env = TradingEnv(test_df, use_sentiment=True)
+env = TradingEnv(test_df, use_sentiment=True, use_ensemble=True)
 obs = env.reset()[0]
 
 # El rango es correcto, pero debemos sincronizar los índices
@@ -271,7 +308,7 @@ for step in range(len(test_df) - env.window_size):
 
 # Simulate trading (without sentiment)
 # Simulate trading (without sentiment)
-env = TradingEnv(test_df, use_sentiment=False)
+env = TradingEnv(test_df, use_sentiment=False, use_ensemble=False)
 obs = env.reset()[0]
 
 for step in range(len(test_df) - env.window_size):
@@ -300,6 +337,27 @@ for step in range(len(test_df) - env.window_size):
         if not remaining_dates.empty:
             simulation_df_without_sentiment.loc[remaining_dates, 'net_worth'] = net_worth_value
             simulation_df_without_sentiment.loc[remaining_dates, 'action'] = 0
+        break
+
+simulation_df_base = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
+
+env = TradingEnv(test_df, use_sentiment=True, use_ensemble=False)
+obs = env.reset()[0]
+
+for step in range(len(test_df) - env.window_size):
+    action, _ = model_base.predict(obs)
+    action_val = action.item()
+
+    obs, reward, done, truncated, info = env.step(action_val)
+
+    current_idx = env.current_step - 1
+    date = test_df.index[current_idx]
+    net_worth_value = env.net_worth
+
+    simulation_df_base.loc[date, 'net_worth'] = net_worth_value
+    simulation_df_base.loc[date, 'action'] = action_val
+
+    if done or truncated:
         break
 
 # === PASO FINAL OBLIGATORIO PARA ELIMINAR EL VALUEERROR ===
@@ -359,50 +417,52 @@ trades_without_sentiment = num_trades(simulation_df_without_sentiment['action'])
 
 # Predicción para el día siguiente
 #inicializar el entorno
-env = TradingEnv(test_df, use_sentiment=True)  # o False para el otro modelo
+# ==============================================================================
+# Acción recomendada para mañana
+# ==============================================================================
+# Inicializamos el entorno incluyendo use_ensemble=True
+env = TradingEnv(test_df, use_sentiment=True, use_ensemble=True)
 obs = env.reset()[0]
 
-# Avanzar hasta el último día del dataset
+# Avanzar hasta el último día del dataset para obtener la observación final
 done = False
 while not done:
-    obs, _, done, _, _ = env.step(0) # avanzar sin hacer operaciones
+    obs, _, done, _, _ = env.step(0) # Avanzar sin hacer operaciones (HOLD)
 
-
-# Acción recomendada para mañana
-#llamamos al modelo entrenado para predecir lo de mañana
+# Llamamos al modelo experto para predecir lo de mañana
 action_tomorrow, _ = model_with_sentiment.predict(obs)
 action_tomorrow = action_tomorrow.item()
-action_map = {0: "HOLD", 1: "BUY", 2: "SELL"}
-print(f"Recomendación para mañana: {action_map[action_tomorrow]}")
+action_map = {0: "HOLD ⚪", 1: "BUY 🟢", 2: "SELL 🔴"}
+print(f"\nRecomendación para mañana (Modelo con Ensemble): {action_map[action_tomorrow]}")
 
-logger.info(f"Sharpe (with sentiment): {sharpe_with_sentiment:.2f}")
-logger.info(f"Sharpe (without sentiment): {sharpe_without_sentiment:.2f}")
-logger.info(f"Max Drawdown (with sentiment): {mdd_with_sentiment:.2%}")
-logger.info(f"Max Drawdown (without sentiment): {mdd_without_sentiment:.2%}")
-logger.info(f"Volatility (with sentiment): {vol_with_sentiment:.2%}")
-logger.info(f"Volatility (without sentiment): {vol_without_sentiment:.2%}")
-logger.info(f"Number of trades (with sentiment): {trades_with_sentiment}")
-logger.info(f"Number of trades (without sentiment): {trades_without_sentiment}")
+# Log de métricas principales
+logger.info(f"Sharpe (with ensemble): {sharpe_with_sentiment:.2f}")
+logger.info(f"Sharpe (without ensemble): {sharpe_without_sentiment:.2f}")
+logger.info(f"Max Drawdown (with ensemble): {mdd_with_sentiment:.2%}")
+logger.info(f"Max Drawdown (without ensemble): {mdd_without_sentiment:.2%}")
+logger.info(f"Volatility (with ensemble): {vol_with_sentiment:.2%}")
+logger.info(f"Volatility (without ensemble): {vol_without_sentiment:.2%}")
+logger.info(f"Number of trades (with ensemble): {trades_with_sentiment}")
+logger.info(f"Number of trades (without ensemble): {trades_without_sentiment}")
 
 # Save results
 results_df = pd.DataFrame({
     'Date': test_df.index,
-    'Net_Worth_With_Sentiment': simulation_df_with_sentiment['net_worth'],
-    'Net_Worth_Without_Sentiment': simulation_df_without_sentiment['net_worth'],
-    'Actions_With_Sentiment': simulation_df_with_sentiment['action'],
-    'Actions_Without_Sentiment': simulation_df_without_sentiment['action']
+    'Net_Worth_With_Ensemble': simulation_df_with_sentiment['net_worth'],
+    'Net_Worth_Without_Ensemble': simulation_df_without_sentiment['net_worth'],
+    'Actions_With_Ensemble': simulation_df_with_sentiment['action'],
+    'Actions_Without_Ensemble': simulation_df_without_sentiment['action']
 })
 
-#save results for buy and hold 
+# Guardar resultados en CSV
 os.makedirs('results', exist_ok=True)
+results_df['Net_Worth_Buy_Hold'] = simulation_df_bh['net_worth']
 results_df.to_csv('results/aapl_trading_results.csv', index=False)
 logger.info("Saved trading results to results/aapl_trading_results.csv")
 
-results_df['Net_Worth_Buy_Hold'] = simulation_df_bh['net_worth']
-results_df.to_csv('results/aapl_trading_results.csv', index=False)
-logger.info("Updated CSV with Buy & Hold results")
-
-# Generate comparison plots
+# ==============================================================================
+# Generate comparison plots (Manteniendo tu estructura original)
+# ==============================================================================
 def plot_results(
     test_df,
     net_worth_with_sentiment,
@@ -421,46 +481,42 @@ def plot_results(
 ):
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
 
-    # -------------------
-    # Precio y acciones
-    # -------------------
-    test_df = test_df.iloc[-len(net_worth_with_sentiment):]
-    ax1.plot(test_df.index, test_df['close'], label='Close Price', color='blue', alpha=0.7)
-    buy_points = test_df[actions_with_sentiment.values == 1]
-    sell_points = test_df[actions_with_sentiment.values == 2]
-    ax1.scatter(buy_points.index, buy_points['close'], color='green', marker='^', label='Buy (With Sentiment)')
-    ax1.scatter(sell_points.index, sell_points['close'], color='red', marker='v', label='Sell (With Sentiment)')
+    # 1. Precio y acciones (Usando el modelo con Ensemble)
+    test_df_plot = test_df.iloc[-len(net_worth_with_sentiment):]
+    ax1.plot(test_df_plot.index, test_df_plot['close'], label='Close Price', color='blue', alpha=0.7)
+    buy_points = test_df_plot[actions_with_sentiment.values == 1]
+    sell_points = test_df_plot[actions_with_sentiment.values == 2]
+    ax1.scatter(buy_points.index, buy_points['close'], color='green', marker='^', label='Buy (With Ensemble)')
+    ax1.scatter(sell_points.index, sell_points['close'], color='red', marker='v', label='Sell (With Ensemble)')
     ax1.set_ylabel('Price ($)')
-    ax1.set_title(f'{symbol} Close Price & Trading Actions')
+    ax1.set_title(f'{symbol} Close Price & Trading Actions (Hybrid RL)')
     ax1.legend(loc='upper left')
-    ax2.plot(test_df.index, simulation_df_bh['net_worth'],
-         label=f'Buy & Hold\nSharpe: {metrics_bh["sharpe"]:.2f}, MDD: {metrics_bh["max_drawdown"]:.1%}',
-         color='green', linestyle=':')
 
-    # -------------------
-    # Net Worth
-    # -------------------
-    ax2.plot(test_df.index, net_worth_with_sentiment,
-             label=f'With Sentiment\nSharpe: {sharpe_with_sentiment:.2f}, MDD: {mdd_with_sentiment:.1%}, Vol: {vol_with_sentiment:.1%}, Trades: {trades_with_sentiment}',
+    # 2. Net Worth Comparison
+    ax2.plot(test_df_plot.index, simulation_df_bh['net_worth'],
+             label=f'Buy & Hold\nSharpe: {metrics_bh["sharpe"]:.2f}, MDD: {metrics_bh["max_drawdown"]:.1%}',
+             color='green', linestyle=':')
+    
+    ax2.plot(test_df_plot.index, net_worth_with_sentiment,
+             label=f'With Ensemble\nSharpe: {sharpe_with_sentiment:.2f}, MDD: {mdd_with_sentiment:.1%}, Vol: {vol_with_sentiment:.1%}',
              color='purple', linewidth=2)
-    ax2.plot(test_df.index, net_worth_without_sentiment,
-             label=f'Without Sentiment\nSharpe: {sharpe_without_sentiment:.2f}, MDD: {mdd_without_sentiment:.1%}, Vol: {vol_without_sentiment:.1%}, Trades: {trades_without_sentiment}',
+    
+    ax2.plot(test_df_plot.index, net_worth_without_sentiment,
+             label=f'Without Ensemble\nSharpe: {sharpe_without_sentiment:.2f}, MDD: {mdd_without_sentiment:.1%}, Vol: {vol_without_sentiment:.1%}',
              color='orange', linewidth=2, linestyle='--')
+    
     ax2.set_ylabel('Net Worth ($)')
     ax2.set_xlabel('Date')
     ax2.set_title('Portfolio Net Worth Comparison')
     ax2.legend(loc='upper left')
 
     plt.tight_layout()
-
-    os.makedirs("results", exist_ok=True)
     plot_path = f"results/{symbol.lower()}_trading_results_comparison.png"
     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.show()
     plt.close(fig)
-    logging.info(f"Plot saved to {plot_path}")
 
-
+# Llamada a la función de gráfico
 plot_results(
     df,
     simulation_df_with_sentiment['net_worth'],
@@ -478,41 +534,23 @@ plot_results(
     symbol
 )
 
-import pandas as pd
-# === FINAL NET WORTH ===
-final_nw_with = simulation_df_with_sentiment['net_worth'].iloc[-1]
-final_nw_without = simulation_df_without_sentiment['net_worth'].iloc[-1]
-final_nw_bh = simulation_df_bh['net_worth'].iloc[-1]
+# ==============================================================================
+# Resumen Final de Métricas (metrics_summary)
+# ==============================================================================
+returns_with = simulation_df_with_sentiment['net_worth'].pct_change().dropna() #ensemble + sent
+returns_without = simulation_df_without_sentiment['net_worth'].pct_change().dropna() #sin 
+returns_bh = simulation_df_bh['net_worth'].pct_change().dropna()
+returns_base = simulation_df_base['net_worth'].pct_change().dropna() #sin ensemble con sent
 
-
-
-# Convertimos a numérico y aseguramos que no haya ceros (que darían -inf)
-nw_with = simulation_df_with_sentiment['net_worth'].astype(float)
-nw_without = simulation_df_without_sentiment['net_worth'].astype(float)
-nw_bh = pd.to_numeric(simulation_df_bh['net_worth']).replace(0, 1e-6)
-
-
-returns_with = simulation_df_with_sentiment['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-returns_without = simulation_df_without_sentiment['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-returns_bh = simulation_df_bh['net_worth'].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-
-# Calculamos todas las métricas para ambos modelos
 metrics_summary = {
     "Metric": [
-        "Final Net Worth",
-        "Sharpe Ratio",
-        "Volatility",
-        "Max Drawdown",
-        "Total Return",
-        "Win Rate",
-        "Calmar Ratio",
-        "Number of trades",
-        "Annualized returns"
+        "Final Net Worth", "Sharpe Ratio", "Volatility", "Max Drawdown",
+        "Total Return", "Win Rate", "Calmar Ratio", "Number of trades", "Annualized returns"
     ],
-    "With_Sentiment": [
-        final_nw_with,
+    "With_Ensemble": [
+        simulation_df_with_sentiment['net_worth'].iloc[-1],
         calculate_sharpe(simulation_df_with_sentiment['net_worth'], freq="1d"),
-        volatility(returns_with),            # <--- USAR RETURNS
+        volatility(returns_with),
         calculate_max_drawdown(simulation_df_with_sentiment['net_worth']),
         total_returns(simulation_df_with_sentiment['net_worth']),
         win_rate(simulation_df_with_sentiment['net_worth'], simulation_df_with_sentiment['action']),
@@ -520,10 +558,10 @@ metrics_summary = {
         num_trades(simulation_df_with_sentiment['action']),
         annualized_return(simulation_df_with_sentiment['net_worth'])
     ],
-    "Without_Sentiment": [
-        final_nw_without,
+    "Without_Ensemble": [
+        simulation_df_without_sentiment['net_worth'].iloc[-1],
         calculate_sharpe(simulation_df_without_sentiment['net_worth'], freq="1d"),
-        volatility(returns_without),           # <--- USAR RETURNS
+        volatility(returns_without),
         calculate_max_drawdown(simulation_df_without_sentiment['net_worth']),
         total_returns(simulation_df_without_sentiment['net_worth']),
         win_rate(simulation_df_without_sentiment['net_worth'], simulation_df_without_sentiment['action']),
@@ -532,26 +570,33 @@ metrics_summary = {
         annualized_return(simulation_df_without_sentiment['net_worth'])
     ],
     "Buy_Hold": [
-        final_nw_bh,
+        simulation_df_bh['net_worth'].iloc[-1],
         calculate_sharpe(simulation_df_bh['net_worth'], freq="1d"),
-        volatility(returns_bh),             # <--- USAR RETURNS
+        volatility(returns_bh),
         calculate_max_drawdown(simulation_df_bh['net_worth']),
         total_returns(simulation_df_bh['net_worth']),
         win_rate(simulation_df_bh['net_worth'], actions_bh),
         calmar_ratio(simulation_df_bh['net_worth']),
         num_trades(actions_bh),
         annualized_return(simulation_df_bh['net_worth'])
-    ]
-}
+        ],
+    "Base model":[
+        simulation_df_base['net_worth'].iloc[-1],
+        calculate_sharpe(simulation_df_base['net_worth'], freq="1d"),
+        volatility(returns_base),
+        calculate_max_drawdown(simulation_df_base['net_worth']),
+        total_returns(simulation_df_base['net_worth']),
+        win_rate(simulation_df_base['net_worth'], simulation_df_base['action']),
+        calmar_ratio(simulation_df_base['net_worth']),
+        num_trades(simulation_df_base['action']),
+        annualized_return(simulation_df_base['net_worth'])
+        ]
+    }
 
-# Convertimos a DataFrame
 metrics_df = pd.DataFrame(metrics_summary)
-
-# Mostramos en consola
 print("\n=== Trading Metrics Summary ===")
-print(metrics_df)
+print(metrics_df.to_string(index=False))
 
-# Guardamos como CSV
 metrics_csv_path = "results/trading_metrics_summary.csv"
 metrics_df.to_csv(metrics_csv_path, index=False)
 logger.info(f"Saved metrics summary to {metrics_csv_path}")

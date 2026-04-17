@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 #métricas de comparación final, después de la simulación
 
-def calculate_sharpe(net_worth: pd.Series, freq: str = "1h") -> float:
+def calculate_sharpe(net_worth: pd.Series, freq: str = "1d") -> float:
     """
     Sharpe ratio robusto adaptado a la frecuencia.
     """

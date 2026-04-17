@@ -25,9 +25,9 @@ def run_full_experiment():
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # 2. Descargar datos de NVDA
-    print("\n[1/5] Descargando datos de NVDA...")
-    df_raw = yf.download("NVDA", start="2022-01-01", end="2024-01-01", interval="1d")
+    # 2. Descargar datos
+    print("\n[1/5] Descargando datos de AAPL...")
+    df_raw = yf.download("APPL", start="2023-11-01", end="2026-04-15", interval="1d")
 
     # Guardar una muestra de df_raw para depuración
     df_raw.head(200).to_csv("debug_df_raw.csv", index=False)

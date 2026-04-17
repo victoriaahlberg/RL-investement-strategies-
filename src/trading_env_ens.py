@@ -144,6 +144,21 @@ class TradingEnv(gym.Env):
         self.feature_cols = ["open", "high", "low", "close", "volume"]
         if self.use_sentiment:
             self.feature_cols.append("sentiment")
+        agent_metrics_cols = [
+            'prob_up', 
+            'entropy', 
+            'ddi', 
+            'rsi_agente', 
+            'vol_agente',
+            'prob max drawdown',
+            #'MACD',
+            #Las siguientes dos aportan tendencias muy bajistas
+            #'dist_sma_20',   # Añadimos estas también, son muy buenas para momentum
+            #'mom_over_vol'
+        ]
+        for col in agent_metrics_cols:
+            if col in self.df.columns:
+                self.feature_cols.append(col)
         self.n_features = len(self.feature_cols)
 
         # --- 6. Normalization (per-environment, no leakage) ---
@@ -162,9 +177,10 @@ class TradingEnv(gym.Env):
             low = np.zeros((self.window_size, self.n_features), dtype=np.float32)
             high = np.ones((self.window_size, self.n_features), dtype=np.float32)
             self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        
 
         # --- 8. Action space (Updated to Discrete(6) for partial actions) ---
-        self.action_space = spaces.Discrete(6)
+        self.action_space = spaces.Discrete(3)
 
         # --- 9. History buffer ---
         self.window_buffer: deque[np.ndarray] = deque(maxlen=self.window_size)
@@ -332,20 +348,22 @@ class TradingEnv(gym.Env):
         # --------------------------------------------------------------------- #
         # 5. Execute action (Updated to handle 6 actions)
         # --------------------------------------------------------------------- #
-        if action == 1:  # BUY – ALL-IN
-            self._execute_buy(current_price, percentage=1.0)
+        if action==1: #buy
+        # Invertimos casi todo el balance, dejando margen para la comisión
+            shares_to_buy = self.balance // (current_price * (1 + self.commission))
+            cost = shares_to_buy * current_price
+            self.shares_held += shares_to_buy
+            # Restamos el coste de las acciones MÁS la comisión
+            self.balance -= (cost * (1 + self.commission))
+        elif action == 2:  # Sell
+            revenue = self.shares_held * current_price
+            self.balance += (revenue * (1 - self.commission))
+            self.shares_held = 0.0
+        
 
-        elif action == 2:  # SELL – ALL-OUT
-            self._execute_sell(current_price, percentage=1.0)
-            
-        elif action == 3:  # BUY – 10% Partial
-            self._execute_buy(current_price, percentage=0.10)
-
-        elif action == 4:  # BUY – 30% Partial
-            self._execute_buy(current_price, percentage=0.30)
-            
-        elif action == 5:  # SELL – 50% Partial
-            self._execute_sell(current_price, percentage=0.50)
+        
+        
+      
 
         # Action 0 (Hold) does nothing here, which is correct.
 
@@ -367,7 +385,8 @@ class TradingEnv(gym.Env):
         #     and more stably with this reward shape.
         #   • Used in virtually every published paper on deep RL for trading.
         if prev_portfolio_value > 0.0:
-            reward = np.log(current_portfolio_value / prev_portfolio_value) * 100  # +1% → +1.0 reward
+            portfolio_return = (current_portfolio_value / prev_portfolio_value) 
+            reward =((current_portfolio_value-prev_portfolio_value)/prev_portfolio_value)*100
         else:
             reward = 0.0
 
@@ -381,7 +400,7 @@ class TradingEnv(gym.Env):
             if current_portfolio_value > 0.0
             else 0.0
         )
-        reward += 0.003 * exposure
+       
         # --------------------------------------------------------------------- #
         # --------------------------------------------------------------------- #
         # 8. Advance day

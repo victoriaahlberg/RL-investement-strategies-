@@ -35,6 +35,7 @@ class TradingEnv(gym.Env):
         self,
         df: pd.DataFrame,
         use_sentiment: bool = True,
+        use_ensemble: bool = True,
         initial_balance: float = 10_000.0,
         return_horizon: int = 21, #new time horizon added to improve hold actions
         window_size: int= 10
@@ -61,6 +62,7 @@ class TradingEnv(gym.Env):
             raise ValueError("DataFrame is empty after dropping NaN")
 
         self.use_sentiment = use_sentiment and "sentiment" in self.df.columns
+        self.use_ensemble = use_ensemble #vamos a compara con y sin ensemble
         self.initial_balance = float(initial_balance)
         self.return_horizon = return_horizon
 
@@ -76,13 +78,15 @@ class TradingEnv(gym.Env):
         n_features_per_day = 5  # open, high, low, close, volume
         if self.use_sentiment:
             n_features_per_day += 1
+        if self.use_ensemble:
+            n_features_per_day+=1
 
         # Features extras que agregamos cada día
         extra_features = 7  # prob_up, prob_max_drawdown, signal_entropy, MACD, RSI, DDI, vol
 
         # Observación total
         #información que viene del mercado 
-        window_features = self.window_size * (n_features_per_day+extra_features)
+        window_features = self.window_size * (n_features_per_day+extra_features) 
         agent_features= 3
         total_features= window_features + agent_features
         self.observation_space = spaces.Box(
@@ -130,6 +134,13 @@ class TradingEnv(gym.Env):
             if n_rows < self.window_size:
                 sentiment = np.pad(sentiment, (0, self.window_size - n_rows), 'constant')
             obs_list.extend(sentiment)
+        # 3. NUEVO: Señal del Ensemble (1 columna x window_size)
+        if self.use_ensemble: 
+            # Si no existe la columna en el DF, la creamos con ceros para evitar errores
+            val = window["signal_ensemble"].values.flatten() if "signal_ensemble" in window.columns else np.zeros(n_rows)
+            if n_rows < self.window_size:
+                val = np.pad(val, (0, self.window_size - n_rows), 'constant')
+            obs_list.extend(val)
 
         # Features para el agente
         for col in ["prob_up", "prob_max_drawdown", "signal_entropy", "macd", "rsi", "ddi", "rolling_vol"]:
@@ -176,18 +187,34 @@ class TradingEnv(gym.Env):
         reward = 0.0
 
         # Ejecutar acción
-        if action==1: #buy
-        # Invertimos casi todo el balance, dejando margen para la comisión
-            shares_to_buy = self.balance // (current_price * (1 + self.commission))
-            cost = shares_to_buy * current_price
-            self.shares_held += shares_to_buy
-            # Restamos el coste de las acciones MÁS la comisión
-            self.balance -= (cost * (1 + self.commission))
-        elif action == 2:  # Sell
-            revenue = self.shares_held * current_price
-            self.balance += (revenue * (1 - self.commission))
-            self.shares_held = 0.0
+        # BUY (acción 1)
+        if action == 1:
+            # Usamos casi todo el balance (dejamos margen para comisión)
+            fraction = 0.95
 
+            cash_to_use = self.balance * fraction
+
+            shares_to_buy = cash_to_use / current_price  # ← CLAVE: sin //
+
+            if shares_to_buy > 0:
+                cost = shares_to_buy * current_price
+                commission = cost * self.commission
+
+                total_cost = cost + commission
+
+                if total_cost <= self.balance:
+                    self.balance -= total_cost
+                    self.shares_held += shares_to_buy
+        # SELL (acción 2)
+        elif action == 2:
+            if self.shares_held > 0:
+                revenue = self.shares_held * current_price
+                commission = revenue * self.commission
+
+                self.balance += (revenue - commission)
+                self.shares_held = 0.0
+        if action == 0:
+            reward -= 0.001
         # Avanzar al siguiente día
         self.current_step += 1
         #caluclamos reward
