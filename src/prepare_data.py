@@ -54,7 +54,7 @@ def generate_super_csv():
 
     # 2. Se lo pasamos al ensemble
     ensemble = EnsembleModel(cfg)
-    df_results = ensemble.fit_predict(df_raw, split_idx=split_idx) # <--- PASAR EL ÍNDICE
+    df_results = ensemble.fit_predict(df_raw) # <--- PASAR EL ÍNDICE
 
 
     # --- ARREGLO PARA DUPLICADOS Y FECHAS (Aquí estaba el error) ---

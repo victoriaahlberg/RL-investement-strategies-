@@ -396,7 +396,7 @@ class WalkForwardAnalyzer:
         # from evaluation.evaluation_metrics import calculate_sharpe, calculate_max_drawdown, annualized_return, total_returns, volatility, calmar_ratio, win_rate
 
         # Definimos la frecuencia (cámbiala a "1d" si tus datos no son de 1 hora)
-        FRECUENCIA = "1d"
+        FRECUENCIA = "1h"
 
 
         # 1. Extraemos las series de Net Worth y Acciones

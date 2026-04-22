@@ -9,6 +9,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 from src.trading_env import TradingEnv
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 from collections import Counter
 from src.buy_and_hold import buy_and_hold
@@ -158,445 +160,448 @@ logger.info(f"Entrenamiento: {len(train_df)} días ({train_df.index.min()} a {tr
 logger.info(f"Test/Evaluación: {len(test_df)} días ({test_df.index.min()} a {test_df.index.max()})")
 
 
-# Initialize environments
-vec_env_with_sentiment = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=True),
-    n_envs=1
-)
-vec_env_without_sentiment = make_vec_env(
+# ================================
+# ENVIRONMENTS (CLAROS Y SEPARADOS)
+# ================================
+
+# 1. RL SIN sentimiento (baseline puro)
+vec_env_rl_no_sent = make_vec_env(
     lambda: TradingEnv(train_df, use_sentiment=False, use_ensemble=False),
     n_envs=1
 )
 
-vec_env_rl_base = make_vec_env(
+# 2. RL CON sentimiento
+vec_env_rl_sent = make_vec_env(
     lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=False),
     n_envs=1
 )
 
-# Set device (MPS or CPU)
+# 3. RL + Ensemble SIN sentimiento
+vec_env_rl_ens_no_sent = make_vec_env(
+    lambda: TradingEnv(train_df, use_sentiment=False, use_ensemble=True),
+    n_envs=1
+)
+
+# 4. RL + Ensemble CON sentimiento (tu modelo "final")
+vec_env_rl_ens_sent = make_vec_env(
+    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=True),
+    n_envs=1
+)
+
+
+# ================================
+# DEVICE
+# ================================
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 logger.info(f"Using device: {device}")
 
-# --- Train PPO model with sentiment ---
-# --- CAMBIO 3: Nombres descriptivos ---
-model_path_with = "models/ppo_expert_ensemble"   # Con todo
-model_path_without = "models/ppo_base_sentiment" # Solo sentimiento
 
-if os.path.exists(model_path_with + ".zip"):
-    # Cargar modelo previo y continuar entrenamiento
-    model_with_sentiment = PPO.load(model_path_with)
-    model_with_sentiment.set_env(vec_env_with_sentiment)
-    additional_timesteps = 100_000 
-    logger.info(f"Continuing training PPO with sentiment for {additional_timesteps} timesteps")
-    model_with_sentiment.learn(total_timesteps=additional_timesteps)
-else:
+# ================================
+# MODELOS PPO
+# ================================
 
-    # Entrenamiento desde cero
-    model_with_sentiment = PPO(
-        "MlpPolicy",
-        vec_env_with_sentiment,
-        verbose=1,
-        device=device,
-        learning_rate=0.0001,
-        clip_range=0.2,
-        ent_coef=0.01
-    )
-    logger.info(f"Training PPO with sentiment for {config['timesteps']} timesteps")
-    model_with_sentiment.learn(total_timesteps=config['timesteps'])
-model_with_sentiment.save(model_path_with)
-logger.info(f"Model with sentiment saved to {model_path_with}")
+# Paths claros (clave para no liarte)
+model_path_rl_no_sent = "models/ppo_rl_no_sent"
+model_path_rl_sent = "models/ppo_rl_sent"
+model_path_rl_ens_no_sent = "models/ppo_rl_ens_no_sent"
+model_path_rl_ens_sent = "models/ppo_rl_ens_sent"
 
-# Train PPO model without sentiment
 
-#caso: ya existe un modelo
+def train_or_load(model_path, env, name):
+    if os.path.exists(model_path + ".zip"):
+        model = PPO.load(model_path)
+        model.set_env(env)
+        logger.info(f"Continuing training {name}")
+        model.learn(total_timesteps=100_000)
+    else:
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            device=device,
+            learning_rate=0.0001,
+            clip_range=0.2,
+            ent_coef=0.01
+        )
+        logger.info(f"Training {name} for {config['timesteps']} timesteps")
+        model.learn(total_timesteps=config['timesteps'])
 
-# 🚨 IMPORTANTE: no reutilizar modelo si cambia el observation space
-if os.path.exists(model_path_without + ".zip"):
-    #cargamos el modelo previamente entrenado
-    model_without_sentiment = PPO.load(model_path_without)
-    #asignamos el entorno actual donde continuara el entrenamiento
-    model_without_sentiment.set_env(vec_env_without_sentiment)
-    additional_timesteps = 100_000 
-    logger.info(f"Continuing training PPO without sentiment for {additional_timesteps} timesteps")
-    model_without_sentiment.learn(total_timesteps=additional_timesteps)
-else:
+    model.save(model_path)
+    return model
 
-    model_without_sentiment = PPO(
-        "MlpPolicy",
-        vec_env_without_sentiment,
-        verbose=1,
-        device=device,
-        learning_rate=0.0001,
-        clip_range=0.2,
-        ent_coef=0.01
-    )
-    logger.info(f"Training PPO without sentiment for {config['timesteps']} timesteps")
-    model_without_sentiment.learn(total_timesteps=config['timesteps'])
-model_without_sentiment.save(model_path_without)
-logger.info(f"Model without sentiment saved to {model_path_without}")
 
-model_path_base = "models/ppo_rl_base"
+# Entrenamiento (MISMA lógica, solo ordenado)
+model_rl_no_sent = train_or_load(model_path_rl_no_sent, vec_env_rl_no_sent, "RL no sentiment")
+model_rl_sent = train_or_load(model_path_rl_sent, vec_env_rl_sent, "RL with sentiment")
+model_rl_ens_no_sent = train_or_load(model_path_rl_ens_no_sent, vec_env_rl_ens_no_sent, "RL + Ensemble no sentiment")
+model_rl_ens_sent = train_or_load(model_path_rl_ens_sent, vec_env_rl_ens_sent, "RL + Ensemble with sentiment")
 
-if os.path.exists(model_path_base + ".zip"):
-    model_base = PPO.load(model_path_base)
-    model_base.set_env(vec_env_rl_base)
-    model_base.learn(total_timesteps=100_000)
-else:
-    model_base = PPO(
-        "MlpPolicy",
-        vec_env_rl_base,
-        verbose=1,
-        device=device,
-        learning_rate=0.0001,
-        clip_range=0.2,
-        ent_coef=0.01
-    )
-    model_base.learn(total_timesteps=config['timesteps'])
 
-model_base.save(model_path_base)
+# ================================
+# DATAFRAMES DE SIMULACIÓN
+# ================================
 
-# Initialize simulation DataFrames with Date as index
-simulation_df_with_sentiment = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
-simulation_df_without_sentiment = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
+simulation_rl_no_sent = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
+simulation_rl_sent = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
+simulation_rl_ens_no_sent = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
+simulation_rl_ens_sent = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
 
-# ------------------------
-# Buy & Hold baseline
-# ------------------------
+
+# ================================
+# FUNCIÓN DE SIMULACIÓN (NO CAMBIA LÓGICA)
+# ================================
+
+def run_simulation(model, env_config, sim_df):
+    env = TradingEnv(test_df, **env_config)
+    obs = env.reset()[0]
+
+    for step in range(len(test_df) - env.window_size):
+        action, _ = model.predict(obs)
+        action_val = action.item()
+
+        obs, reward, done, truncated, info = env.step(action_val)
+
+        current_idx = env.current_step - 1
+        date = test_df.index[current_idx]
+        net_worth_value = env.net_worth
+
+        sim_df.loc[date, 'net_worth'] = net_worth_value
+        sim_df.loc[date, 'action'] = action_val
+
+        if done or truncated:
+            break
+
+    # fill
+    sim_df['net_worth'] = sim_df['net_worth'].fillna(initial_balance).ffill()
+    sim_df['action'] = sim_df['action'].fillna(0)
+
+    return sim_df
+
+
+# ================================
+# EJECUCIÓN DE SIMULACIONES
+# ================================
+
+simulation_rl_no_sent = run_simulation(
+    model_rl_no_sent,
+    {"use_sentiment": False, "use_ensemble": False},
+    simulation_rl_no_sent
+)
+
+simulation_rl_sent = run_simulation(
+    model_rl_sent,
+    {"use_sentiment": True, "use_ensemble": False},
+    simulation_rl_sent
+)
+
+simulation_rl_ens_no_sent = run_simulation(
+    model_rl_ens_no_sent,
+    {"use_sentiment": False, "use_ensemble": True},
+    simulation_rl_ens_no_sent
+)
+
+simulation_rl_ens_sent = run_simulation(
+    model_rl_ens_sent,
+    {"use_sentiment": True, "use_ensemble": True},
+    simulation_rl_ens_sent
+)
+
+
+# ================================
+# BUY & HOLD (igual)
+# ================================
 simulation_df_bh, metrics_bh, actions_bh, final_buy_hold = buy_and_hold(test_df, initial_balance=initial_balance)
-logger.info(f"Buy & Hold Metrics: Sharpe={metrics_bh['sharpe']:.2f}, MDD={metrics_bh['max_drawdown']:.1%}, "
-            f"Vol={metrics_bh['volatility']:.1%}, Trades={metrics_bh['num_trades']}")
 
+# ============================================
+# LIMPIEZA Y VALIDACIÓN (COHERENTE CON NUEVOS NOMBRES)
+# ============================================
 
+all_simulations = [
+    simulation_rl_no_sent,
+    simulation_rl_sent,
+    simulation_rl_ens_no_sent,
+    simulation_rl_ens_sent
+]
 
-#Aquí ya no entrenamos, evaluamos 
-# --- SIMULACIÓN CORREGIDA EN train_model.py ---
-env = TradingEnv(test_df, use_sentiment=True, use_ensemble=True)
-obs = env.reset()[0]
-
-# El rango es correcto, pero debemos sincronizar los índices
-for step in range(len(test_df) - env.window_size):
-    action, _ = model_with_sentiment.predict(obs)
-    action_val = action.item()
-    
-    # 1. Ejecutar el paso. El entorno ya calcula el Net Worth internamente de forma correcta.
-    obs, reward, done, truncated, info = env.step(action_val)
-    
-    # 2. RECUPERAR LOS VALORES REALES DEL ENTORNO
-    # No calcules el Net Worth fuera; usa el que el entorno ya calculó tras el movimiento del precio.
-    net_worth_value = env.net_worth 
-    
-    # 3. SINCRONIZAR LA FECHA
-    # La fecha debe ser la del paso actual del entorno (que ya avanzó en env.step)
-    current_idx = env.current_step - 1 
-    date = test_df.index[current_idx]
-    
-    # Guardar en tu DataFrame de resultados
-    simulation_df_with_sentiment.loc[date, 'net_worth'] = net_worth_value
-    simulation_df_with_sentiment.loc[date, 'action'] = action_val
-    
-    logger.debug(f"Step {step} | Date {date} | Action {action_val} | Net Worth {net_worth_value:.2f}")
-
-    if done or truncated:
-        # Tu lógica de rellenado de fechas faltantes permanece igual
-        missing_dates = test_df.index[current_idx + 1:].tolist()
-        if missing_dates:
-            logger.warning(f"Simulación terminada antes. Rellenando {len(missing_dates)} fechas.")
-            for m_date in missing_dates:
-                simulation_df_with_sentiment.loc[m_date, 'net_worth'] = net_worth_value
-                simulation_df_with_sentiment.loc[m_date, 'action'] = 0 # Hold
-        break
-
-# Simulate trading (without sentiment)
-# Simulate trading (without sentiment)
-env = TradingEnv(test_df, use_sentiment=False, use_ensemble=False)
-obs = env.reset()[0]
-
-for step in range(len(test_df) - env.window_size):
-    action, _ = model_without_sentiment.predict(obs)
-    action_val = action.item()
-    
-    # 1. Ejecutamos el paso (el entorno actualiza balance, acciones y net_worth)
-    obs, reward, done, truncated, info = env.step(action_val)
-    
-    # 2. SINCRONIZACIÓN CORRECTA:
-    # Usamos el paso real en el que está el entorno para buscar la fecha
-    current_idx = env.current_step - 1 
-    date = test_df.index[current_idx]
-    
-    # Usamos el Net Worth que el entorno ya calculó internamente (es el más fiable)
-    net_worth_value = env.net_worth 
-    
-    simulation_df_without_sentiment.loc[date, 'net_worth'] = net_worth_value
-    simulation_df_without_sentiment.loc[date, 'action'] = action_val
-    
-    logger.debug(f"Step {step} (without): action={action_val}, net_worth={net_worth_value}, date={date}")
-    
-    if done or truncated:
-        # Rellenar fechas faltantes hasta el final del dataset si se corta antes
-        remaining_dates = test_df.index[current_idx + 1:]
-        if not remaining_dates.empty:
-            simulation_df_without_sentiment.loc[remaining_dates, 'net_worth'] = net_worth_value
-            simulation_df_without_sentiment.loc[remaining_dates, 'action'] = 0
-        break
-
-simulation_df_base = pd.DataFrame(index=test_df.index, columns=['net_worth', 'action'])
-
-env = TradingEnv(test_df, use_sentiment=True, use_ensemble=False)
-obs = env.reset()[0]
-
-for step in range(len(test_df) - env.window_size):
-    action, _ = model_base.predict(obs)
-    action_val = action.item()
-
-    obs, reward, done, truncated, info = env.step(action_val)
-
-    current_idx = env.current_step - 1
-    date = test_df.index[current_idx]
-    net_worth_value = env.net_worth
-
-    simulation_df_base.loc[date, 'net_worth'] = net_worth_value
-    simulation_df_base.loc[date, 'action'] = action_val
-
-    if done or truncated:
-        break
-
-# === PASO FINAL OBLIGATORIO PARA ELIMINAR EL VALUEERROR ===
-# Rellenamos los huecos de la ventana inicial (días 0 a 10) que el bucle no toca
-simulation_df_without_sentiment['net_worth'] = simulation_df_without_sentiment['net_worth'].fillna(initial_balance)
-simulation_df_without_sentiment['action'] = simulation_df_without_sentiment['action'].fillna(0)
-
-# Aseguramos que todo sea float para las métricas
-simulation_df_without_sentiment['net_worth'] = simulation_df_without_sentiment['net_worth'].astype(float)
-
-# === RELLENADO DE SEGURIDAD PARA AMBOS MODELOS ===
-# Esto elimina los NaNs de los primeros 10 días (window_size)
-for sim_df in [simulation_df_with_sentiment, simulation_df_without_sentiment]:
-    # 1. Rellenar la ventana inicial (donde el agente no podía operar)
+for sim_df in all_simulations:
+    # 1. Rellenar ventana inicial
     sim_df['net_worth'] = sim_df['net_worth'].fillna(initial_balance)
     sim_df['action'] = sim_df['action'].fillna(0)
-    
-    # 2. Por si acaso el entorno terminó antes del final del dataset
+
+    # 2. Forward fill por si corta antes
     sim_df['net_worth'] = sim_df['net_worth'].ffill()
     sim_df['action'] = sim_df['action'].fillna(0)
-    
-    # 3. Solución al "FutureWarning" que te salía en consola:
-    # Convertimos explícitamente a tipos numéricos para evitar avisos de pandas
+
+    # 3. Tipos correctos (evita warnings)
     sim_df['net_worth'] = pd.to_numeric(sim_df['net_worth'])
     sim_df['action'] = pd.to_numeric(sim_df['action']).astype(int)
 
-# Ahora las validaciones ya no fallarán
 logger.info("Date indices and data aligned successfully")
 
-# Verify alignment and data completeness
-if not simulation_df_with_sentiment.index.equals(test_df.index):
-    logger.error("Index misalignment in simulation_df_with_sentiment")
-    raise ValueError("Index misalignment in simulation_df_with_sentiment")
-if not simulation_df_without_sentiment.index.equals(test_df.index):
-    logger.error("Index misalignment in simulation_df_without_sentiment")
-    raise ValueError("Index misalignment in simulation_df_without_sentiment")
-if simulation_df_with_sentiment['net_worth'].isna().any():
-    logger.error("Missing net_worth values in simulation_df_with_sentiment")
-    raise ValueError("Missing net_worth values in simulation_df_with_sentiment")
-if simulation_df_without_sentiment['net_worth'].isna().any():
-    logger.error("Missing net_worth values in simulation_df_without_sentiment")
-    raise ValueError("Missing net_worth values in simulation_df_without_sentiment")
-logger.info("Date indices and data aligned successfully")
 
-sharpe_with_sentiment = calculate_sharpe(simulation_df_with_sentiment['net_worth'])
-sharpe_without_sentiment = calculate_sharpe(simulation_df_without_sentiment['net_worth'])
+# ============================================
+# VALIDACIONES
+# ============================================
 
-mdd_with_sentiment = calculate_max_drawdown(simulation_df_with_sentiment['net_worth'])
-mdd_without_sentiment = calculate_max_drawdown(simulation_df_without_sentiment['net_worth'])
+for name, sim_df in {
+    "rl_no_sent": simulation_rl_no_sent,
+    "rl_sent": simulation_rl_sent,
+    "rl_ens_no_sent": simulation_rl_ens_no_sent,
+    "rl_ens_sent": simulation_rl_ens_sent
+}.items():
+    
+    if not sim_df.index.equals(test_df.index):
+        logger.error(f"Index misalignment in {name}")
+        raise ValueError(f"Index misalignment in {name}")
+        
+    if sim_df['net_worth'].isna().any():
+        logger.error(f"Missing net_worth values in {name}")
+        raise ValueError(f"Missing net_worth values in {name}")
 
-vol_with_sentiment = volatility(simulation_df_with_sentiment['net_worth'])
-vol_without_sentiment = volatility(simulation_df_without_sentiment['net_worth'])
-
-trades_with_sentiment = num_trades(simulation_df_with_sentiment['action'])
-trades_without_sentiment = num_trades(simulation_df_without_sentiment['action'])
+logger.info("All simulations validated correctly")
 
 
-# Predicción para el día siguiente
-#inicializar el entorno
-# ==============================================================================
-# Acción recomendada para mañana
-# ==============================================================================
-# Inicializamos el entorno incluyendo use_ensemble=True
+# ============================================
+# MÉTRICAS PRINCIPALES (modelo final vs baseline)
+# ============================================
+
+# Modelo final (ensemble + sentiment)
+
+
+
+# ============================================
+# PREDICCIÓN PARA MAÑANA
+# ============================================
+
 env = TradingEnv(test_df, use_sentiment=True, use_ensemble=True)
 obs = env.reset()[0]
 
-# Avanzar hasta el último día del dataset para obtener la observación final
 done = False
 while not done:
-    obs, _, done, _, _ = env.step(0) # Avanzar sin hacer operaciones (HOLD)
+    obs, _, done, _, _ = env.step(0)
 
-# Llamamos al modelo experto para predecir lo de mañana
-action_tomorrow, _ = model_with_sentiment.predict(obs)
+action_tomorrow, _ = model_rl_ens_sent.predict(obs)
 action_tomorrow = action_tomorrow.item()
+
 action_map = {0: "HOLD ⚪", 1: "BUY 🟢", 2: "SELL 🔴"}
-print(f"\nRecomendación para mañana (Modelo con Ensemble): {action_map[action_tomorrow]}")
+print(f"\nRecomendación para mañana (Modelo final): {action_map[action_tomorrow]}")
 
-# Log de métricas principales
-logger.info(f"Sharpe (with ensemble): {sharpe_with_sentiment:.2f}")
-logger.info(f"Sharpe (without ensemble): {sharpe_without_sentiment:.2f}")
-logger.info(f"Max Drawdown (with ensemble): {mdd_with_sentiment:.2%}")
-logger.info(f"Max Drawdown (without ensemble): {mdd_without_sentiment:.2%}")
-logger.info(f"Volatility (with ensemble): {vol_with_sentiment:.2%}")
-logger.info(f"Volatility (without ensemble): {vol_without_sentiment:.2%}")
-logger.info(f"Number of trades (with ensemble): {trades_with_sentiment}")
-logger.info(f"Number of trades (without ensemble): {trades_without_sentiment}")
 
-# Save results
+# ============================================
+# LOGS
+# ============================================
+
+
+
+# ============================================
+# SAVE RESULTS
+# ============================================
+
 results_df = pd.DataFrame({
     'Date': test_df.index,
-    'Net_Worth_With_Ensemble': simulation_df_with_sentiment['net_worth'],
-    'Net_Worth_Without_Ensemble': simulation_df_without_sentiment['net_worth'],
-    'Actions_With_Ensemble': simulation_df_with_sentiment['action'],
-    'Actions_Without_Ensemble': simulation_df_without_sentiment['action']
+    'Net_Worth_Final': simulation_rl_ens_sent['net_worth'],
+    'Net_Worth_Baseline': simulation_rl_sent['net_worth'],
+    'Net_Worth_No_Sent': simulation_rl_no_sent['net_worth'],
+    'Net_Worth_Ens_No_Sent': simulation_rl_ens_no_sent['net_worth'],
+    'Actions_Final': simulation_rl_ens_sent['action'],
 })
 
-# Guardar resultados en CSV
 os.makedirs('results', exist_ok=True)
 results_df['Net_Worth_Buy_Hold'] = simulation_df_bh['net_worth']
+
 results_df.to_csv('results/aapl_trading_results.csv', index=False)
 logger.info("Saved trading results to results/aapl_trading_results.csv")
 
-# ==============================================================================
-# Generate comparison plots (Manteniendo tu estructura original)
-# ==============================================================================
-def plot_results(
-    test_df,
-    net_worth_with_sentiment,
-    actions_with_sentiment,
-    net_worth_without_sentiment,
-    actions_without_sentiment,
-    sharpe_with_sentiment,
-    sharpe_without_sentiment,
-    mdd_with_sentiment,
-    mdd_without_sentiment,
-    vol_with_sentiment,
-    vol_without_sentiment,
-    trades_with_sentiment,
-    trades_without_sentiment,
-    symbol
-):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
 
-    # 1. Precio y acciones (Usando el modelo con Ensemble)
-    test_df_plot = test_df.iloc[-len(net_worth_with_sentiment):]
-    ax1.plot(test_df_plot.index, test_df_plot['close'], label='Close Price', color='blue', alpha=0.7)
-    buy_points = test_df_plot[actions_with_sentiment.values == 1]
-    sell_points = test_df_plot[actions_with_sentiment.values == 2]
-    ax1.scatter(buy_points.index, buy_points['close'], color='green', marker='^', label='Buy (With Ensemble)')
-    ax1.scatter(sell_points.index, sell_points['close'], color='red', marker='v', label='Sell (With Ensemble)')
-    ax1.set_ylabel('Price ($)')
-    ax1.set_title(f'{symbol} Close Price & Trading Actions (Hybrid RL)')
-    ax1.legend(loc='upper left')
+# ============================================
+# RETURNS PARA MÉTRICAS
+# ============================================
 
-    # 2. Net Worth Comparison
-    ax2.plot(test_df_plot.index, simulation_df_bh['net_worth'],
-             label=f'Buy & Hold\nSharpe: {metrics_bh["sharpe"]:.2f}, MDD: {metrics_bh["max_drawdown"]:.1%}',
-             color='green', linestyle=':')
-    
-    ax2.plot(test_df_plot.index, net_worth_with_sentiment,
-             label=f'With Ensemble\nSharpe: {sharpe_with_sentiment:.2f}, MDD: {mdd_with_sentiment:.1%}, Vol: {vol_with_sentiment:.1%}',
-             color='purple', linewidth=2)
-    
-    ax2.plot(test_df_plot.index, net_worth_without_sentiment,
-             label=f'Without Ensemble\nSharpe: {sharpe_without_sentiment:.2f}, MDD: {mdd_without_sentiment:.1%}, Vol: {vol_without_sentiment:.1%}',
-             color='orange', linewidth=2, linestyle='--')
-    
-    ax2.set_ylabel('Net Worth ($)')
-    ax2.set_xlabel('Date')
-    ax2.set_title('Portfolio Net Worth Comparison')
-    ax2.legend(loc='upper left')
-
-    plt.tight_layout()
-    plot_path = f"results/{symbol.lower()}_trading_results_comparison.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-    plt.show()
-    plt.close(fig)
-
-# Llamada a la función de gráfico
-plot_results(
-    df,
-    simulation_df_with_sentiment['net_worth'],
-    simulation_df_with_sentiment['action'],
-    simulation_df_without_sentiment['net_worth'],
-    simulation_df_without_sentiment['action'],
-    sharpe_with_sentiment,
-    sharpe_without_sentiment,
-    mdd_with_sentiment,
-    mdd_without_sentiment,
-    vol_with_sentiment,
-    vol_without_sentiment,
-    trades_with_sentiment,
-    trades_without_sentiment,
-    symbol
-)
-
-# ==============================================================================
-# Resumen Final de Métricas (metrics_summary)
-# ==============================================================================
-returns_with = simulation_df_with_sentiment['net_worth'].pct_change().dropna() #ensemble + sent
-returns_without = simulation_df_without_sentiment['net_worth'].pct_change().dropna() #sin 
+returns_final = simulation_rl_ens_sent['net_worth'].pct_change().dropna()
+returns_baseline = simulation_rl_sent['net_worth'].pct_change().dropna()
 returns_bh = simulation_df_bh['net_worth'].pct_change().dropna()
-returns_base = simulation_df_base['net_worth'].pct_change().dropna() #sin ensemble con sent
+
+
+# ============================================
+# SUMMARY
+# ============================================
+
+# ============================================
+# SUMMARY (TODOS LOS MODELOS)
+# ============================================
+
+simulations_dict = {
+    "RL": simulation_rl_no_sent,
+    "RL+Sent": simulation_rl_sent,
+    "RL+Ens": simulation_rl_ens_no_sent,
+    "RL+Ens+Sent": simulation_rl_ens_sent,
+    "Buy_Hold": simulation_df_bh
+}
+
+actions_dict = {
+    "RL": simulation_rl_no_sent['action'],
+    "RL+Sent": simulation_rl_sent['action'],
+    "RL+Ens": simulation_rl_ens_no_sent['action'],
+    "RL+Ens+Sent": simulation_rl_ens_sent['action'],
+    "Buy_Hold": actions_bh
+}
 
 metrics_summary = {
     "Metric": [
         "Final Net Worth", "Sharpe Ratio", "Volatility", "Max Drawdown",
         "Total Return", "Win Rate", "Calmar Ratio", "Number of trades", "Annualized returns"
-    ],
-    "With_Ensemble": [
-        simulation_df_with_sentiment['net_worth'].iloc[-1],
-        calculate_sharpe(simulation_df_with_sentiment['net_worth'], freq="1d"),
-        volatility(returns_with),
-        calculate_max_drawdown(simulation_df_with_sentiment['net_worth']),
-        total_returns(simulation_df_with_sentiment['net_worth']),
-        win_rate(simulation_df_with_sentiment['net_worth'], simulation_df_with_sentiment['action']),
-        calmar_ratio(simulation_df_with_sentiment['net_worth']),
-        num_trades(simulation_df_with_sentiment['action']),
-        annualized_return(simulation_df_with_sentiment['net_worth'])
-    ],
-    "Without_Ensemble": [
-        simulation_df_without_sentiment['net_worth'].iloc[-1],
-        calculate_sharpe(simulation_df_without_sentiment['net_worth'], freq="1d"),
-        volatility(returns_without),
-        calculate_max_drawdown(simulation_df_without_sentiment['net_worth']),
-        total_returns(simulation_df_without_sentiment['net_worth']),
-        win_rate(simulation_df_without_sentiment['net_worth'], simulation_df_without_sentiment['action']),
-        calmar_ratio(simulation_df_without_sentiment['net_worth']),
-        num_trades(simulation_df_without_sentiment['action']),
-        annualized_return(simulation_df_without_sentiment['net_worth'])
-    ],
-    "Buy_Hold": [
-        simulation_df_bh['net_worth'].iloc[-1],
-        calculate_sharpe(simulation_df_bh['net_worth'], freq="1d"),
-        volatility(returns_bh),
-        calculate_max_drawdown(simulation_df_bh['net_worth']),
-        total_returns(simulation_df_bh['net_worth']),
-        win_rate(simulation_df_bh['net_worth'], actions_bh),
-        calmar_ratio(simulation_df_bh['net_worth']),
-        num_trades(actions_bh),
-        annualized_return(simulation_df_bh['net_worth'])
-        ],
-    "Base model":[
-        simulation_df_base['net_worth'].iloc[-1],
-        calculate_sharpe(simulation_df_base['net_worth'], freq="1d"),
-        volatility(returns_base),
-        calculate_max_drawdown(simulation_df_base['net_worth']),
-        total_returns(simulation_df_base['net_worth']),
-        win_rate(simulation_df_base['net_worth'], simulation_df_base['action']),
-        calmar_ratio(simulation_df_base['net_worth']),
-        num_trades(simulation_df_base['action']),
-        annualized_return(simulation_df_base['net_worth'])
-        ]
-    }
+    ]
+}
 
+# Construcción dinámica
+for name, sim in simulations_dict.items():
+    
+    returns = sim['net_worth'].pct_change().dropna()
+
+    metrics_summary[name] = [
+        sim['net_worth'].iloc[-1],
+        calculate_sharpe(sim['net_worth'], freq="1d"),
+        volatility(returns),
+        calculate_max_drawdown(sim['net_worth']),
+        total_returns(sim['net_worth']),
+        win_rate(sim['net_worth'], actions_dict[name]),
+        calmar_ratio(sim['net_worth']),
+        num_trades(actions_dict[name]),
+        annualized_return(sim['net_worth'])
+    ]
+
+# DataFrame final
 metrics_df = pd.DataFrame(metrics_summary)
+
 print("\n=== Trading Metrics Summary ===")
 print(metrics_df.to_string(index=False))
 
-metrics_csv_path = "results/trading_metrics_summary.csv"
-metrics_df.to_csv(metrics_csv_path, index=False)
-logger.info(f"Saved metrics summary to {metrics_csv_path}")
+# Guardado
+os.makedirs("results", exist_ok=True)
+metrics_df.to_csv("results/trading_metrics_summary.csv", index=False)
+
+logger.info("Saved metrics summary")
+
+def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol):
+    """
+    simulations_dict = {
+        "RL": simulation_rl_no_sent,
+        "RL+Sent": simulation_rl_sent,
+        "RL+Ens": simulation_rl_ens_no_sent,
+        "RL+Ens+Sent": simulation_rl_ens_sent
+    }
+    """
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 14), sharex=True)
+
+    # =========================
+    # 1. PRECIO + ACCIONES (solo modelo final)
+    # =========================
+    final_model = simulations_dict["RL+Ens+Sent"]
+
+    common_index = final_model.index.intersection(test_df.index)
+    test_df_plot = test_df.loc[common_index]
+    final_model = final_model.loc[common_index]
+
+    ax1.plot(test_df_plot.index, test_df_plot['close'], label='Close Price', alpha=0.7)
+
+    buy_mask = final_model['action'].values == 1
+    sell_mask = final_model['action'].values == 2
+
+    buy_points = test_df_plot[buy_mask]
+    sell_points = test_df_plot[sell_mask]
+
+    ax1.scatter(buy_points.index, buy_points['close'], marker='^', label='Buy', s=60)
+    ax1.scatter(sell_points.index, sell_points['close'], marker='v', label='Sell', s=60)
+
+    ax1.set_title(f"{symbol} Price & Actions (Final Model)")
+    ax1.legend()
+
+    # =========================
+    # 2. NET WORTH (todos)
+    # =========================
+    for name, sim in simulations_dict.items():
+        ax2.plot(sim.index, sim['net_worth'], label=name)
+
+    ax2.plot(simulation_df_bh.index, simulation_df_bh['net_worth'],
+             label="Buy & Hold", linestyle=':')
+
+    ax2.set_title("Net Worth Comparison")
+    ax2.set_ylabel("Net Worth ($)")
+    ax2.legend()
+
+    # =========================
+    # 3. P&L (todos)
+    # =========================
+    for name, sim in simulations_dict.items():
+        pnl = sim['net_worth'] - initial_balance
+        ax3.plot(sim.index, pnl, label=name)
+
+    pnl_bh = simulation_df_bh['net_worth'] - initial_balance
+    ax3.plot(simulation_df_bh.index, pnl_bh, label="Buy & Hold", linestyle=':')
+
+    ax3.axhline(0, linestyle='--')
+
+    ax3.set_title("Profit & Loss")
+    ax3.set_ylabel("P&L ($)")
+    ax3.set_xlabel("Date")
+    ax3.legend()
+
+    plt.tight_layout()
+    plt.savefig(f"results/{symbol}_main_plots.png", dpi=150)
+    plt.show()
+
+
+def plot_returns_distribution(simulations_dict):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    axes = axes.flatten()
+
+    for ax, (name, sim) in zip(axes, simulations_dict.items()):
+        returns = sim['net_worth'].pct_change()
+
+        df_analysis = pd.DataFrame({
+            "returns": returns,
+            "action": sim['action']
+        }).dropna()
+
+        sns.boxplot(x="action", y="returns", data=df_analysis, ax=ax)
+
+        ax.set_title(name)
+        ax.set_xticks([0,1,2])
+        ax.set_xticklabels(['HOLD', 'BUY', 'SELL'])
+
+    plt.suptitle("Returns Distribution by Action")
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_action_distributions(simulations_dict):
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+    axes = axes.flatten()
+
+    for ax, (name, sim) in zip(axes, simulations_dict.items()):
+        sns.countplot(x=sim['action'].astype(int), ax=ax)
+        ax.set_title(name)
+        ax.set_xticks([0,1,2])
+        ax.set_xticklabels(['HOLD', 'BUY', 'SELL'])
+
+    plt.suptitle("Action Distribution per Model")
+    plt.tight_layout()
+    plt.show()
+simulations_dict = {
+    "RL": simulation_rl_no_sent,
+    "RL+Sent": simulation_rl_sent,
+    "RL+Ens": simulation_rl_ens_no_sent,
+    "RL+Ens+Sent": simulation_rl_ens_sent
+}
+
+plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol)
+
+plot_action_distributions(simulations_dict)
+
+plot_returns_distribution(simulations_dict)
