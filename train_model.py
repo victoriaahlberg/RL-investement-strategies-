@@ -7,7 +7,8 @@ import torch
 import matplotlib.pyplot as plt
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
-from src.trading_env import TradingEnv
+#from src.trading_env import TradingEnv
+from src.trading_env_global import TradingEnvGlobal
 import os
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -166,27 +167,29 @@ logger.info(f"Test/Evaluación: {len(test_df)} días ({test_df.index.min()} a {t
 
 # 1. RL SIN sentimiento (baseline puro)
 vec_env_rl_no_sent = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=False, use_ensemble=False),
+    lambda: TradingEnvGlobal(train_df, use_sentiment=False, use_ensemble=False),
     n_envs=1
 )
 
 # 2. RL CON sentimiento
 vec_env_rl_sent = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=False),
+    lambda: TradingEnvGlobal(train_df, use_sentiment=True, use_ensemble=False),
     n_envs=1
 )
 
 # 3. RL + Ensemble SIN sentimiento
 vec_env_rl_ens_no_sent = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=False, use_ensemble=True),
+    lambda: TradingEnvGlobal(train_df, use_sentiment=False, use_ensemble=True),
     n_envs=1
 )
 
 # 4. RL + Ensemble CON sentimiento (tu modelo "final")
 vec_env_rl_ens_sent = make_vec_env(
-    lambda: TradingEnv(train_df, use_sentiment=True, use_ensemble=True),
+    lambda: TradingEnvGlobal(train_df, use_sentiment=True, use_ensemble=True),
     n_envs=1
 )
+
+
 
 
 # ================================
@@ -252,7 +255,7 @@ simulation_rl_ens_sent = pd.DataFrame(index=test_df.index, columns=['net_worth',
 # ================================
 
 def run_simulation(model, env_config, sim_df):
-    env = TradingEnv(test_df, **env_config)
+    env = TradingEnvGlobal(test_df, **env_config)
     obs = env.reset()[0]
 
     for step in range(len(test_df) - env.window_size):
@@ -261,18 +264,22 @@ def run_simulation(model, env_config, sim_df):
 
         obs, reward, done, truncated, info = env.step(action_val)
 
-        current_idx = env.current_step - 1
-        date = test_df.index[current_idx]
-        net_worth_value = env.net_worth
+        net_worth_value = info["net_worth"]  # ✔ correcto
+
+        #current_idx = env.step_idx - 1
+        date = test_df.index[step]
 
         sim_df.loc[date, 'net_worth'] = net_worth_value
         sim_df.loc[date, 'action'] = action_val
+        #date = test_df.index[step]
+        
 
         if done or truncated:
             break
 
     # fill
-    sim_df['net_worth'] = sim_df['net_worth'].fillna(initial_balance).ffill()
+    sim_df['net_worth'] = sim_df['net_worth'].ffill()
+    
     sim_df['action'] = sim_df['action'].fillna(0)
 
     return sim_df
@@ -373,7 +380,7 @@ logger.info("All simulations validated correctly")
 # PREDICCIÓN PARA MAÑANA
 # ============================================
 
-env = TradingEnv(test_df, use_sentiment=True, use_ensemble=True)
+env = TradingEnvGlobal(test_df, use_sentiment=True, use_ensemble=True)
 obs = env.reset()[0]
 
 done = False
@@ -600,8 +607,58 @@ simulations_dict = {
     "RL+Ens+Sent": simulation_rl_ens_sent
 }
 
+cost_lambda=0.001
+def plot_trade_efficiency(simulations_dict, initial_balance, lambda_=0.001):
+
+    plt.figure(figsize=(10,6))
+
+    for name, sim in simulations_dict.items():
+
+        net_profit = sim['net_worth'].iloc[-1] - initial_balance
+        n_trades = num_trades(sim['action'])
+
+        efficiency = net_profit - lambda_ * n_trades
+
+        plt.bar(name, efficiency)
+
+    plt.title("Trade Efficiency (R - λN)")
+    plt.ylabel("Efficiency Score")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+def plot_profit_vs_trades(simulations_dict, initial_balance):
+    plt.figure(figsize=(8,6))
+
+    x = []
+    y = []
+
+    for name, sim in simulations_dict.items():
+        net_profit = sim['net_worth'].iloc[-1] - initial_balance
+        n_trades = num_trades(sim['action'])
+
+        x.append(n_trades)
+        y.append(net_profit)
+
+        plt.scatter(n_trades, net_profit, label=name)
+
+    # línea de tendencia
+    z = np.polyfit(x, y, 1)
+    p = np.poly1d(z)
+    plt.plot(x, p(x), linestyle="--")
+
+    plt.xlabel("Number of Trades")
+    plt.ylabel("Net Profit")
+    plt.title("Profit vs Trading Frequency")
+    plt.legend()
+    plt.show()
+
 plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol)
 
 plot_action_distributions(simulations_dict)
 
 plot_returns_distribution(simulations_dict)
+
+plot_trade_efficiency(simulations_dict, initial_balance,cost_lambda)
+
+plot_profit_vs_trades(simulations_dict, initial_balance)
