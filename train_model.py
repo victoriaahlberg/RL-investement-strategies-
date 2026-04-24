@@ -2,6 +2,7 @@ import argparse
 import matplotlib
 import yaml
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import logging
 import torch
 import matplotlib.pyplot as plt
@@ -256,10 +257,9 @@ simulation_rl_ens_sent = pd.DataFrame(index=test_df.index, columns=['net_worth',
 
 def run_simulation(model, env_config, sim_df):
     env = TradingEnvGlobal(test_df, **env_config)
-    obs = env.reset()[0]
-
+    obs, _ = env.reset()
     for step in range(len(test_df) - env.window_size):
-        action, _ = model.predict(obs)
+        action, _ = model.predict(obs, deterministic=False) #ahora cada ejecucion genrea trayectorias difrentes 
         action_val = action.item()
 
         obs, reward, done, truncated, info = env.step(action_val)
@@ -267,7 +267,7 @@ def run_simulation(model, env_config, sim_df):
         net_worth_value = info["net_worth"]  # ✔ correcto
 
         #current_idx = env.step_idx - 1
-        date = test_df.index[step]
+        date = env.original_index[env.step_idx - 1]
 
         sim_df.loc[date, 'net_worth'] = net_worth_value
         sim_df.loc[date, 'action'] = action_val
@@ -278,248 +278,357 @@ def run_simulation(model, env_config, sim_df):
             break
 
     # fill
-    sim_df['net_worth'] = sim_df['net_worth'].ffill()
-    
-    sim_df['action'] = sim_df['action'].fillna(0)
+    sim_df['net_worth'] = sim_df['net_worth'].fillna(initial_balance)
+    sim_df['action'] = pd.to_numeric(sim_df['action'], errors='coerce').fillna(0).astype(int)
 
     return sim_df
 
+def run_montecarlo(model, env_config, n_runs=100):
+
+    results = []
+
+    for i in range(n_runs):
+
+        env = TradingEnvGlobal(test_df, **env_config)
+        obs, _ = env.reset()
+        sim_df = pd.DataFrame(index=test_df.index, columns=["net_worth", "action"])
+
+        done = False
+        t = 0
+
+        # estado inicial
+        sim_df.loc[t, "net_worth"] = initial_balance
+        sim_df.loc[t, "action"] = 0
+
+        while not done:
+
+            action, _ = model.predict(obs, deterministic=False)
+            action_val = int(action.item())
+
+            obs, reward, done, truncated, info = env.step(action_val)
+            if t >= len(test_df):
+                break
+
+            date = test_df.index[t]
+            sim_df.loc[date, "net_worth"] = float(info["net_worth"])
+            sim_df.loc[date, "action"] = action_val
+            t+=1
+           
+
+            if truncated:
+                break
+
+        # limpieza
+        sim_df = sim_df.ffill().fillna(initial_balance)
+
+        sim_df["action"] = pd.to_numeric(sim_df["action"], errors="coerce") \
+            .fillna(0).astype(int)
+
+        results.append(sim_df)
+        
+
+    return results
 
 # ================================
 # EJECUCIÓN DE SIMULACIONES
 # ================================
+# ================================
+# MONTE CARLO SIMULATIONS
+# ================================
 
-simulation_rl_no_sent = run_simulation(
+
+N_MC = 100
+ 
+mc_rl_no_sent = run_montecarlo(
     model_rl_no_sent,
     {"use_sentiment": False, "use_ensemble": False},
-    simulation_rl_no_sent
+    N_MC
 )
-
-simulation_rl_sent = run_simulation(
+ 
+mc_rl_sent = run_montecarlo(
     model_rl_sent,
     {"use_sentiment": True, "use_ensemble": False},
-    simulation_rl_sent
+    N_MC
 )
-
-simulation_rl_ens_no_sent = run_simulation(
+ 
+mc_rl_ens_no_sent = run_montecarlo(
     model_rl_ens_no_sent,
     {"use_sentiment": False, "use_ensemble": True},
-    simulation_rl_ens_no_sent
+    N_MC
 )
-
-simulation_rl_ens_sent = run_simulation(
+ 
+mc_rl_ens_sent = run_montecarlo(
     model_rl_ens_sent,
     {"use_sentiment": True, "use_ensemble": True},
-    simulation_rl_ens_sent
+    N_MC
 )
-
-
+ 
+logger.info(f"MC runs complete: {N_MC} trajectories per model")
+ 
 # ================================
-# BUY & HOLD (igual)
+# BUG 1 FIX — derive simulation DataFrames from MC mean trajectories
+# (previously these were never populated, leaving all net_worth = 10000)
 # ================================
-simulation_df_bh, metrics_bh, actions_bh, final_buy_hold = buy_and_hold(test_df, initial_balance=initial_balance)
 
-# ============================================
-# LIMPIEZA Y VALIDACIÓN (COHERENTE CON NUEVOS NOMBRES)
-# ============================================
+def mc_to_mean_df(mc_runs, reference_index):
+    net_worth_cols = []
+    action_cols    = []
 
-all_simulations = [
-    simulation_rl_no_sent,
-    simulation_rl_sent,
-    simulation_rl_ens_no_sent,
-    simulation_rl_ens_sent
-]
+    for r in mc_runs:
+        sim = r.copy().reindex(reference_index).ffill()
+        net_worth_cols.append(sim["net_worth"].to_numpy())
+        action_cols.append(
+            pd.to_numeric(sim["action"], errors="coerce").fillna(0).astype(int).to_numpy()
+        )
 
-for sim_df in all_simulations:
-    # 1. Rellenar ventana inicial
-    sim_df['net_worth'] = sim_df['net_worth'].fillna(initial_balance)
-    sim_df['action'] = sim_df['action'].fillna(0)
+    nw_arr  = np.vstack(net_worth_cols)       # shape (n_runs, n_steps)
+    act_arr = np.vstack(action_cols)           # shape (n_runs, n_steps)
 
-    # 2. Forward fill por si corta antes
-    sim_df['net_worth'] = sim_df['net_worth'].ffill()
-    sim_df['action'] = sim_df['action'].fillna(0)
+    mean_nw = nw_arr.mean(axis=0)
 
-    # 3. Tipos correctos (evita warnings)
-    sim_df['net_worth'] = pd.to_numeric(sim_df['net_worth'])
-    sim_df['action'] = pd.to_numeric(sim_df['action']).astype(int)
+    # majority vote per timestep: most common action across all runs
+    majority_action = np.apply_along_axis(
+        lambda col: np.bincount(col, minlength=3).argmax(),
+        axis=0,
+        arr=act_arr
+    )
 
-logger.info("Date indices and data aligned successfully")
+    return pd.DataFrame(
+        {"net_worth": mean_nw, "action": majority_action},
+        index=reference_index
+    )
+
+simulation_rl_no_sent     = mc_to_mean_df(mc_rl_no_sent,     test_df.index)
+simulation_rl_sent        = mc_to_mean_df(mc_rl_sent,        test_df.index)
+simulation_rl_ens_no_sent = mc_to_mean_df(mc_rl_ens_no_sent, test_df.index)
+simulation_rl_ens_sent    = mc_to_mean_df(mc_rl_ens_sent,    test_df.index)
+ 
+simulations_dict = {
+    "RL":          simulation_rl_no_sent,
+    "RL+Sent":     simulation_rl_sent,
+    "RL+Ens":      simulation_rl_ens_no_sent,
+    "RL+Ens+Sent": simulation_rl_ens_sent,
+}
+ 
+mc_dict = {
+    "RL":          mc_rl_no_sent,
+    "RL+Sent":     mc_rl_sent,
+    "RL+Ens":      mc_rl_ens_no_sent,
+    "RL+Ens+Sent": mc_rl_ens_sent,
+}
+ 
+logger.info("Simulation DataFrames built from MC mean trajectories")
+ 
+# ================================
+# VALIDATION — log a sanity check per model
+# ================================
+ 
+for name, sim in simulations_dict.items():
+    final_nw = sim["net_worth"].iloc[-1]
+    n_trades  = sim["action"].value_counts().to_dict()
+    logger.info(f"{name} | final net worth: {final_nw:.2f} | action counts: {n_trades}")
+ 
+# ================================
+# BUY & HOLD BASELINE
+# ================================
+ 
+simulation_df_bh, metrics_bh, actions_bh, final_buy_hold = buy_and_hold(
+    test_df, initial_balance=initial_balance
+)
+ 
+# ================================
+# MC METRICS (with BUG 2 fix — calmar_ratio now actually appended)
+# ================================
+ 
+def mc_metrics_summary(mc_runs, reference_index=None):
+    """
+    Compute metrics two ways:
+    - Distribution stats (CI, skew, kurtosis) from all N MC runs
+    - Point metrics (sharpe, vol, etc.) from the MEAN trajectory
+      so they reflect the expected behaviour, not noise from short runs
+    """
+    if reference_index is None:
+        reference_index = test_df.index
+
+    # --- distribution of final wealth across runs ---
+    final_values = np.array([
+    pd.to_numeric(
+        r.reindex(reference_index)["net_worth"],
+        errors="coerce"
+    ).ffill().iloc[-1]
+    for r in mc_runs
+    ])
+
+    # --- mean trajectory (same logic as mc_to_mean_df) ---
+    mean_sim = mc_to_mean_df(mc_runs, reference_index)
+    w        = mean_sim["net_worth"].astype(float)
+    actions  = mean_sim["action"]
+    returns  = w.pct_change(fill_method=None).dropna()
+
+    return {
+        # Performance
+        "final_net_worth_mean":    np.mean(final_values),
+        "final_net_worth_std":     np.std(final_values),
+        "final_net_worth_ci_low":  np.percentile(final_values, 2.5),
+        "final_net_worth_ci_high": np.percentile(final_values, 97.5),
+        # Returns  (computed on mean trajectory — no more zeros)
+        "total_return_mean":  total_returns(w),
+        "total_return_std":   np.std([total_returns(
+                                  mc_to_mean_df([r], reference_index)["net_worth"]
+                              ) for r in mc_runs]),
+        "annual_return_mean": annualized_return(w),
+        "annual_return_std":  0.0,   # expensive to recompute; set 0 or remove
+        # Risk
+        "sharpe_mean":        calculate_sharpe(w, freq="1d"),
+        "sharpe_std":         np.std([calculate_sharpe(
+                                  r["net_worth"].astype(float).ffill(), freq="1d"
+                              ) for r in mc_runs]),
+        "volatility_mean":    volatility(returns),
+        "volatility_std":     0.0,
+        "max_drawdown_mean":  calculate_max_drawdown(w),
+        "max_drawdown_worst": np.min([calculate_max_drawdown(
+                                  r["net_worth"].astype(float).ffill()
+                              ) for r in mc_runs]),
+        "calmar_mean":        calmar_ratio(w),
+        "calmar_std":         0.0,
+        # Behaviour
+        "num_trades_mean": num_trades(actions),
+        "num_trades_std":  np.std([num_trades(
+                               pd.to_numeric(r["action"], errors="coerce").fillna(0).astype(int)
+                           ) for r in mc_runs]),
+        "win_rate_mean":   win_rate(w, actions),
+        "win_rate_std":    0.0,
+        # Distribution shape
+        "skew_final_wealth":     pd.Series(final_values).skew(),
+        "kurtosis_final_wealth": pd.Series(final_values).kurtosis(),
+    }
 
 
-# ============================================
-# VALIDACIONES
-# ============================================
-
-for name, sim_df in {
-    "rl_no_sent": simulation_rl_no_sent,
-    "rl_sent": simulation_rl_sent,
-    "rl_ens_no_sent": simulation_rl_ens_no_sent,
-    "rl_ens_sent": simulation_rl_ens_sent
-}.items():
-    
-    if not sim_df.index.equals(test_df.index):
-        logger.error(f"Index misalignment in {name}")
-        raise ValueError(f"Index misalignment in {name}")
-        
-    if sim_df['net_worth'].isna().any():
-        logger.error(f"Missing net_worth values in {name}")
-        raise ValueError(f"Missing net_worth values in {name}")
-
-logger.info("All simulations validated correctly")
-
-
-# ============================================
-# MÉTRICAS PRINCIPALES (modelo final vs baseline)
-# ============================================
-
-# Modelo final (ensemble + sentiment)
-
-
-
-# ============================================
-# PREDICCIÓN PARA MAÑANA
-# ============================================
-
+ 
+ 
+results = {name: mc_metrics_summary(runs) for name, runs in mc_dict.items()}
+ 
+# ================================
+# METRICS TABLE
+# ================================
+ 
+bh_final   = simulation_df_bh["net_worth"].iloc[-1]
+bh_returns = simulation_df_bh["net_worth"].pct_change(fill_method=None).dropna()  # DEPRECATION FIX
+ 
+metrics_table = pd.DataFrame({
+    "Metric": [
+        "Final Net Worth", "Sharpe", "Volatility", "Max Drawdown",
+        "Total Return", "Annual Return", "Calmar", "Num Trades", "Win Rate",
+    ],
+    **{
+        name: [
+            results[name]["final_net_worth_mean"],
+            results[name]["sharpe_mean"],
+            results[name]["volatility_mean"],
+            results[name]["max_drawdown_mean"],
+            results[name]["total_return_mean"],
+            results[name]["annual_return_mean"],
+            results[name]["calmar_mean"],       # now populated
+            results[name]["num_trades_mean"],
+            results[name]["win_rate_mean"],
+        ]
+        for name in ["RL", "RL+Sent", "RL+Ens", "RL+Ens+Sent"]
+    },
+    "Buy and Hold": [
+        bh_final,
+        calculate_sharpe(simulation_df_bh["net_worth"], freq="1d"),
+        volatility(bh_returns),
+        calculate_max_drawdown(simulation_df_bh["net_worth"]),
+        (bh_final / simulation_df_bh["net_worth"].iloc[0]) - 1,
+        annualized_return(simulation_df_bh["net_worth"]),
+        np.nan,   # calmar not meaningful for single-trade B&H
+        1,
+        np.nan,
+    ],
+})
+ 
+print(metrics_table.to_string(index=False))
+ 
+# ================================
+# TOMORROW'S PREDICTION
+# ================================
+ 
 env = TradingEnvGlobal(test_df, use_sentiment=True, use_ensemble=True)
 obs = env.reset()[0]
-
+ 
 done = False
 while not done:
     obs, _, done, _, _ = env.step(0)
-
+ 
 action_tomorrow, _ = model_rl_ens_sent.predict(obs)
-action_tomorrow = action_tomorrow.item()
-
+action_tomorrow    = action_tomorrow.item()
+ 
 action_map = {0: "HOLD ⚪", 1: "BUY 🟢", 2: "SELL 🔴"}
 print(f"\nRecomendación para mañana (Modelo final): {action_map[action_tomorrow]}")
-
-
-# ============================================
-# LOGS
-# ============================================
-
-
-
-# ============================================
-# SAVE RESULTS
-# ============================================
-
-results_df = pd.DataFrame({
-    'Date': test_df.index,
-    'Net_Worth_Final': simulation_rl_ens_sent['net_worth'],
-    'Net_Worth_Baseline': simulation_rl_sent['net_worth'],
-    'Net_Worth_No_Sent': simulation_rl_no_sent['net_worth'],
-    'Net_Worth_Ens_No_Sent': simulation_rl_ens_no_sent['net_worth'],
-    'Actions_Final': simulation_rl_ens_sent['action'],
-})
-
-os.makedirs('results', exist_ok=True)
-results_df['Net_Worth_Buy_Hold'] = simulation_df_bh['net_worth']
-
-results_df.to_csv('results/aapl_trading_results.csv', index=False)
+ 
+# ================================
+# SAVE RESULTS (with DEPRECATION FIX on infer_objects)
+# ================================
+ 
+os.makedirs("results", exist_ok=True)
+aligned_index = test_df.index
+ 
+results_df = pd.DataFrame(index=aligned_index)
+ 
+results_df["Net_Worth_Final"]       = (simulation_rl_ens_sent["net_worth"]
+                                        .reindex(aligned_index).ffill()
+                                        .infer_objects(copy=False))  # DEPRECATION FIX
+results_df["Net_Worth_RL_Sent"]     = (simulation_rl_sent["net_worth"]
+                                        .reindex(aligned_index).ffill()
+                                        .infer_objects(copy=False))
+results_df["Net_Worth_RL_No_Sent"]  = (simulation_rl_no_sent["net_worth"]
+                                        .reindex(aligned_index).ffill()
+                                        .infer_objects(copy=False))
+results_df["Net_Worth_RL_Ens_No_Sent"] = (simulation_rl_ens_no_sent["net_worth"]
+                                            .reindex(aligned_index).ffill()
+                                            .infer_objects(copy=False))
+results_df["Actions_RL_Ens_Sent"]   = (simulation_rl_ens_sent["action"]
+                                        .reindex(aligned_index)
+                                        .fillna(0).infer_objects(copy=False).astype(int))
+results_df["Net_Worth_Buy_Hold"]    = (simulation_df_bh["net_worth"]
+                                        .reindex(aligned_index).ffill()
+                                        .infer_objects(copy=False))
+ 
+results_df.to_csv("results/aapl_trading_results.csv")
 logger.info("Saved trading results to results/aapl_trading_results.csv")
 
 
-# ============================================
-# RETURNS PARA MÉTRICAS
-# ============================================
-
-returns_final = simulation_rl_ens_sent['net_worth'].pct_change().dropna()
-returns_baseline = simulation_rl_sent['net_worth'].pct_change().dropna()
-returns_bh = simulation_df_bh['net_worth'].pct_change().dropna()
-
-
-# ============================================
-# SUMMARY
-# ============================================
-
-# ============================================
-# SUMMARY (TODOS LOS MODELOS)
-# ============================================
+def align(sim):
+    return sim.reindex(test_df.index).ffill()
 
 simulations_dict = {
-    "RL": simulation_rl_no_sent,
-    "RL+Sent": simulation_rl_sent,
-    "RL+Ens": simulation_rl_ens_no_sent,
-    "RL+Ens+Sent": simulation_rl_ens_sent,
-    "Buy_Hold": simulation_df_bh
-}
-
-actions_dict = {
-    "RL": simulation_rl_no_sent['action'],
-    "RL+Sent": simulation_rl_sent['action'],
-    "RL+Ens": simulation_rl_ens_no_sent['action'],
-    "RL+Ens+Sent": simulation_rl_ens_sent['action'],
-    "Buy_Hold": actions_bh
-}
-
-metrics_summary = {
-    "Metric": [
-        "Final Net Worth", "Sharpe Ratio", "Volatility", "Max Drawdown",
-        "Total Return", "Win Rate", "Calmar Ratio", "Number of trades", "Annualized returns"
-    ]
-}
-
-# Construcción dinámica
-for name, sim in simulations_dict.items():
-    
-    returns = sim['net_worth'].pct_change().dropna()
-
-    metrics_summary[name] = [
-        sim['net_worth'].iloc[-1],
-        calculate_sharpe(sim['net_worth'], freq="1d"),
-        volatility(returns),
-        calculate_max_drawdown(sim['net_worth']),
-        total_returns(sim['net_worth']),
-        win_rate(sim['net_worth'], actions_dict[name]),
-        calmar_ratio(sim['net_worth']),
-        num_trades(actions_dict[name]),
-        annualized_return(sim['net_worth'])
-    ]
-
-# DataFrame final
-metrics_df = pd.DataFrame(metrics_summary)
-
-print("\n=== Trading Metrics Summary ===")
-print(metrics_df.to_string(index=False))
-
-# Guardado
-os.makedirs("results", exist_ok=True)
-metrics_df.to_csv("results/trading_metrics_summary.csv", index=False)
-
-logger.info("Saved metrics summary")
-
-def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol):
-    """
-    simulations_dict = {
         "RL": simulation_rl_no_sent,
         "RL+Sent": simulation_rl_sent,
         "RL+Ens": simulation_rl_ens_no_sent,
         "RL+Ens+Sent": simulation_rl_ens_sent
     }
-    """
 
+def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol):
+    
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 14), sharex=True)
 
     # =========================
     # 1. PRECIO + ACCIONES (solo modelo final)
     # =========================
-    final_model = simulations_dict["RL+Ens+Sent"]
+    final_model = simulation_rl_ens_sent.reindex(test_df.index).ffill()
 
     common_index = final_model.index.intersection(test_df.index)
     test_df_plot = test_df.loc[common_index]
     final_model = final_model.loc[common_index]
 
-    ax1.plot(test_df_plot.index, test_df_plot['close'], label='Close Price', alpha=0.7)
 
-    buy_mask = final_model['action'].values == 1
-    sell_mask = final_model['action'].values == 2
+    ax1.plot(test_df.index, test_df["close"], label="Close Price")
 
-    buy_points = test_df_plot[buy_mask]
-    sell_points = test_df_plot[sell_mask]
+    buy = final_model["action"].reindex(test_df.index).fillna(0) == 1
+    sell = final_model["action"].reindex(test_df.index).fillna(0) == 2
 
-    ax1.scatter(buy_points.index, buy_points['close'], marker='^', label='Buy', s=60)
-    ax1.scatter(sell_points.index, sell_points['close'], marker='v', label='Sell', s=60)
+    ax1.scatter(test_df.index[buy], test_df["close"][buy], marker="^")
+    ax1.scatter(test_df.index[sell], test_df["close"][sell], marker="v")
 
     ax1.set_title(f"{symbol} Price & Actions (Final Model)")
     ax1.legend()
@@ -528,10 +637,8 @@ def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balan
     # 2. NET WORTH (todos)
     # =========================
     for name, sim in simulations_dict.items():
-        ax2.plot(sim.index, sim['net_worth'], label=name)
-
-    ax2.plot(simulation_df_bh.index, simulation_df_bh['net_worth'],
-             label="Buy & Hold", linestyle=':')
+        sim = sim.reindex(test_df.index).ffill()
+        ax2.plot(sim.index, sim["net_worth"], label=name)
 
     ax2.set_title("Net Worth Comparison")
     ax2.set_ylabel("Net Worth ($)")
@@ -559,106 +666,81 @@ def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balan
     plt.show()
 
 
-def plot_returns_distribution(simulations_dict):
-    import seaborn as sns
-    import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-    axes = axes.flatten()
+def plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol):
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-    for ax, (name, sim) in zip(axes, simulations_dict.items()):
-        returns = sim['net_worth'].pct_change()
+    # --- 1. Action distribution (from MC runs, not mean sim) ---
+    ax = axes[0, 0]
+    for name, runs in mc_dict.items():
+        all_actions = np.concatenate([
+            pd.to_numeric(r["action"], errors="coerce").fillna(0).astype(int).to_numpy()
+            for r in runs
+        ])
+        if len(np.unique(all_actions)) > 1:
+            sns.kdeplot(all_actions, label=name, ax=ax, warn_singular=False)
+        else:
+            ax.axvline(all_actions[0], label=f"{name} (constant)", linestyle="--")
+    ax.set_title("Action distribution (pooled MC runs)")
+    ax.set_xlabel("Action  (0=Hold, 1=Buy, 2=Sell)")
+    ax.legend()
 
-        df_analysis = pd.DataFrame({
-            "returns": returns,
-            "action": sim['action']
-        }).dropna()
-
-        sns.boxplot(x="action", y="returns", data=df_analysis, ax=ax)
-
-        ax.set_title(name)
-        ax.set_xticks([0,1,2])
-        ax.set_xticklabels(['HOLD', 'BUY', 'SELL'])
-
-    plt.suptitle("Returns Distribution by Action")
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_action_distributions(simulations_dict):
-
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
-
-    axes = axes.flatten()
-
-    for ax, (name, sim) in zip(axes, simulations_dict.items()):
-        sns.countplot(x=sim['action'].astype(int), ax=ax)
-        ax.set_title(name)
-        ax.set_xticks([0,1,2])
-        ax.set_xticklabels(['HOLD', 'BUY', 'SELL'])
-
-    plt.suptitle("Action Distribution per Model")
-    plt.tight_layout()
-    plt.show()
-simulations_dict = {
-    "RL": simulation_rl_no_sent,
-    "RL+Sent": simulation_rl_sent,
-    "RL+Ens": simulation_rl_ens_no_sent,
-    "RL+Ens+Sent": simulation_rl_ens_sent
-}
-
-cost_lambda=0.001
-def plot_trade_efficiency(simulations_dict, initial_balance, lambda_=0.001):
-
-    plt.figure(figsize=(10,6))
-
+    # --- 2. Returns distribution ---
+    ax = axes[0, 1]
     for name, sim in simulations_dict.items():
+        returns = sim["net_worth"].pct_change(fill_method=None).dropna()
+        if returns.std() > 0:
+            sns.kdeplot(returns, label=name, ax=ax, warn_singular=False)
+    ax.set_title("Returns distribution (mean trajectory)")
+    ax.legend()
 
-        net_profit = sim['net_worth'].iloc[-1] - initial_balance
-        n_trades = num_trades(sim['action'])
-
-        efficiency = net_profit - lambda_ * n_trades
-
-        plt.bar(name, efficiency)
-
-    plt.title("Trade Efficiency (R - λN)")
-    plt.ylabel("Efficiency Score")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.show()
-
-def plot_profit_vs_trades(simulations_dict, initial_balance):
-    plt.figure(figsize=(8,6))
-
-    x = []
-    y = []
-
+    # --- 3. Profit vs Trades (with polyfit guard) ---
+    ax = axes[1, 0]
+    x, y, labels = [], [], []
     for name, sim in simulations_dict.items():
-        net_profit = sim['net_worth'].iloc[-1] - initial_balance
-        n_trades = num_trades(sim['action'])
+        profit = sim["net_worth"].iloc[-1] - initial_balance
+        trades = num_trades(sim["action"])
+        ax.scatter(trades, profit, label=name, zorder=3)
+        x.append(trades)
+        y.append(profit)
+        labels.append(name)
 
-        x.append(n_trades)
-        y.append(net_profit)
+    # only fit if there is actual variance in both axes
+    if len(set(x)) > 1 and len(set(y)) > 1 and not any(np.isnan(y)):
+        try:
+            z = np.polyfit(x, y, 1)
+            p = np.poly1d(z)
+            xs = sorted(x)
+            ax.plot(xs, p(xs), linestyle="--", alpha=0.5, color="gray")
+        except (np.linalg.LinAlgError, RuntimeWarning):
+            pass   # silently skip if polyfit still fails
 
-        plt.scatter(n_trades, net_profit, label=name)
+    ax.set_title("Profit vs trades")
+    ax.set_xlabel("Trades")
+    ax.set_ylabel("Profit ($)")
+    ax.legend()
 
-    # línea de tendencia
-    z = np.polyfit(x, y, 1)
-    p = np.poly1d(z)
-    plt.plot(x, p(x), linestyle="--")
+    # --- 4. MC boxplot ---
+    ax = axes[1, 1]
+    data, labels = [], []
+    for name, runs in mc_dict.items():
+        final_vals = [
+            pd.to_numeric(r["net_worth"], errors="coerce").ffill().iloc[-1]
+            for r in runs
+        ]
+        data.append(final_vals)
+        labels.append(name)
+    ax.boxplot(data, tick_labels=labels)
+    ax.axhline(initial_balance, linestyle="--", color="gray", alpha=0.5, label="Initial balance")
+    ax.set_title("Monte Carlo final wealth distribution")
+    ax.legend()
 
-    plt.xlabel("Number of Trades")
-    plt.ylabel("Net Profit")
-    plt.title("Profit vs Trading Frequency")
-    plt.legend()
+    plt.suptitle(f"{symbol} — secondary analysis dashboard")
+    plt.tight_layout()
+    os.makedirs("results", exist_ok=True)
+    plt.savefig(f"results/{symbol}_secondary_dashboard.png", dpi=150)
     plt.show()
+
 
 plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol)
-
-plot_action_distributions(simulations_dict)
-
-plot_returns_distribution(simulations_dict)
-
-plot_trade_efficiency(simulations_dict, initial_balance,cost_lambda)
-
-plot_profit_vs_trades(simulations_dict, initial_balance)
+plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol)

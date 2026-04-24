@@ -70,7 +70,10 @@ def total_returns (net_worth:pd.Series)-> float:
 def win_rate(net_worth:pd.Series, actions:pd.Series)->float:
     trades=[]
     entry_value=None
-
+    min_len = min(len(net_worth), len(actions))
+    net_worth = net_worth.iloc[:min_len]
+    actions = actions[:min_len]
+    
     for i in range(len(actions)):
         action = actions.iloc[i]
 

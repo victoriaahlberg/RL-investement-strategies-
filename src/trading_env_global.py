@@ -19,11 +19,12 @@ class TradingEnvGlobal(gym.Env):
         window_size=10,
         commission=0.0015,
         lambda_efficiency=0.0
+        
     ):
         super().__init__()
-
-        self.df = df.reset_index(drop=True)
-
+        
+        self.original_index = df.index.to_numpy()  # <- guardas fechas reales
+        self.df = df.reset_index(drop=True)        # <- dataframe limpio para RL
         # =========================
         # AUTO FEATURE DETECTION
         # =========================
@@ -68,7 +69,7 @@ class TradingEnvGlobal(gym.Env):
         self.window_size = window_size
         self.commission = commission
         self.lambda_efficiency = lambda_efficiency
-
+        self.step_idx = self.window_size
         # =========================
         # SPACE
         # =========================
@@ -151,6 +152,7 @@ class TradingEnvGlobal(gym.Env):
 
         # avanzar tiempo
         self.step_idx += 1
+        
 
         # ⚠️ IMPORTANTE: usar precio coherente tras step
         current_price = self.close[self.step_idx - 1]
