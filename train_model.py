@@ -204,12 +204,12 @@ logger.info(f"Using device: {device}")
 # MODELOS PPO
 # ================================
 
-# Paths claros (clave para no liarte)
-model_path_rl_no_sent = "models/ppo_rl_no_sent"
-model_path_rl_sent = "models/ppo_rl_sent"
-model_path_rl_ens_no_sent = "models/ppo_rl_ens_no_sent"
-model_path_rl_ens_sent = "models/ppo_rl_ens_sent"
+# Paths claros
 
+model_path_rl_no_sent = f"models/{symbol}_ppo_rl_no_sent"
+model_path_rl_sent = f"models/{symbol}_ppo_rl_sent"
+model_path_rl_ens_no_sent = f"models/{symbol}_ppo_rl_ens_no_sent"
+model_path_rl_ens_sent = f"models/{symbol}_ppo_rl_ens_sent"
 
 def train_or_load(model_path, env, name):
     if os.path.exists(model_path + ".zip"):
@@ -458,6 +458,18 @@ def mc_metrics_summary(mc_runs, reference_index=None):
     ).ffill().iloc[-1]
     for r in mc_runs
     ])
+    
+    sharpe_values = np.array([
+    calculate_sharpe(
+        pd.to_numeric(
+            r.reindex(reference_index)["net_worth"],
+            errors="coerce"
+        ).ffill(),
+        freq="1d"
+    )
+    for r in mc_runs
+    ])
+
 
     # --- mean trajectory (same logic as mc_to_mean_df) ---
     mean_sim = mc_to_mean_df(mc_runs, reference_index)
@@ -467,22 +479,31 @@ def mc_metrics_summary(mc_runs, reference_index=None):
 
     return {
         # Performance
-        "final_net_worth_mean":    np.mean(final_values),
-        "final_net_worth_std":     np.std(final_values),
-        "final_net_worth_ci_low":  np.percentile(final_values, 2.5),
-        "final_net_worth_ci_high": np.percentile(final_values, 97.5),
+  
         # Returns  (computed on mean trajectory — no more zeros)
         "total_return_mean":  total_returns(w),
         "total_return_std":   np.std([total_returns(
                                   mc_to_mean_df([r], reference_index)["net_worth"]
                               ) for r in mc_runs]),
+    # --- Net Worth ---
+        "final_net_worth_mean": np.mean(final_values),
+        "final_net_worth_std": np.std(final_values),
+        "final_net_worth_ci_low": np.percentile(final_values, 2.5),
+        "final_net_worth_ci_high": np.percentile(final_values, 97.5),
+        "skew_final_wealth": pd.Series(final_values).skew(),
+        "kurtosis_final_wealth": pd.Series(final_values).kurtosis(),
+
+        # --- Sharpe ---
+        "sharpe_mean": np.mean(sharpe_values),
+        "sharpe_std": np.std(sharpe_values),
+        "sharpe_ci_low": np.percentile(sharpe_values, 2.5),
+        "sharpe_ci_high": np.percentile(sharpe_values, 97.5),
+        "skew_sharpe": pd.Series(sharpe_values).skew(),
+        "kurtosis_sharpe": pd.Series(sharpe_values).kurtosis(),
+
+    # --- resto igual ---
         "annual_return_mean": annualized_return(w),
-        "annual_return_std":  0.0,   # expensive to recompute; set 0 or remove
-        # Risk
-        "sharpe_mean":        calculate_sharpe(w, freq="1d"),
-        "sharpe_std":         np.std([calculate_sharpe(
-                                  r["net_worth"].astype(float).ffill(), freq="1d"
-                              ) for r in mc_runs]),
+        "annual_return_std":  0.0,   # expensive to recompute; set 0 or remove 
         "volatility_mean":    volatility(returns),
         "volatility_std":     0.0,
         "max_drawdown_mean":  calculate_max_drawdown(w),
@@ -507,6 +528,61 @@ def mc_metrics_summary(mc_runs, reference_index=None):
  
  
 results = {name: mc_metrics_summary(runs) for name, runs in mc_dict.items()}
+
+stats_table = pd.DataFrame({
+    "Metric": [
+        "Net Worth Mean",
+        "Net Worth Std",
+        "Net Worth CI Low",
+        "Net Worth CI High",
+        "Net Worth Skew",
+        "Net Worth Kurtosis",
+        "Sharpe Mean (MC)",
+        "Sharpe Std",
+        "Sharpe CI Low",
+        "Sharpe CI High",
+        "Sharpe Skew",
+        "Sharpe Kurtosis",
+    ],
+    **{
+        name: [
+            results[name]["final_net_worth_mean"],
+            results[name]["final_net_worth_std"],
+            results[name]["final_net_worth_ci_low"],
+            results[name]["final_net_worth_ci_high"],
+            results[name]["skew_final_wealth"],
+            results[name]["kurtosis_final_wealth"],
+            results[name]["sharpe_mean"],
+            results[name]["sharpe_std"],
+            results[name]["sharpe_ci_low"],
+            results[name]["sharpe_ci_high"],
+            results[name]["skew_sharpe"],
+            results[name]["kurtosis_sharpe"],
+        ]
+        for name in ["RL", "RL+Sent", "RL+Ens", "RL+Ens+Sent"]
+    }
+})
+styled = stats_table.style \
+    .format("{:.4f}") \
+    .background_gradient(cmap="RdYlGn", axis=1)
+
+print(styled)
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.axis('off')
+
+table = ax.table(
+    cellText=stats_table.round(3).values,
+    colLabels=stats_table.columns,
+    loc='center'
+)
+
+table.auto_set_font_size(False)
+table.set_fontsize(10)
+table.scale(1, 1.5)
+
+plt.title("Monte Carlo Statistical Summary")
+plt.savefig(f"results/{symbol}_stats_table.png", dpi=150)
+plt.show()
  
 # ================================
 # METRICS TABLE
@@ -740,6 +816,21 @@ def plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol)
     os.makedirs("results", exist_ok=True)
     plt.savefig(f"results/{symbol}_secondary_dashboard.png", dpi=150)
     plt.show()
+
+plt.figure(figsize=(8,5))
+
+sharpe_values = [
+    calculate_sharpe(
+        pd.to_numeric(r["net_worth"], errors="coerce").ffill(),
+        freq="1d"
+    )
+    for r in mc_rl_ens_sent
+]
+
+sns.histplot(sharpe_values, kde=True)
+
+plt.title("Sharpe distribution (RL+Ens+Sent)")
+plt.show()
 
 
 plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol)

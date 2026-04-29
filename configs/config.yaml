@@ -12,6 +12,11 @@ verbose: 0
 stock_symbol: AAPL #every script uses this value
 # stock_symbol: MSFT
 # stock_symbol: AMD
+#stock_symbol: QQQ 
+#stock_symbol: SPY
+#stock_symbol: "GC=F" 
+#stock_symbol: "CL=F"
+
 
 # Initial trading capital
 initial_balance: 10000
@@ -21,9 +26,9 @@ commission: 0.001   # 0.1 %
 # Date range for historical data
 # start_date: "2023-11-16"
 # end_date: "2024-11-10"
-start_date: "2023-11-01"
+start_date: "2022-12-01"
 end_date: "2026-04-15"
-
+#de 2022 a 2026 da buenos resultados
 data_interval: "1h"  # "1d" (daily), '1h' (hourly), '30m', '15m', '5m', etc.
 
 
