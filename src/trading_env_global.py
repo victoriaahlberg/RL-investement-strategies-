@@ -154,7 +154,7 @@ class TradingEnvGlobal(gym.Env):
         self.step_idx += 1
         
 
-        # ⚠️ IMPORTANTE: usar precio coherente tras step
+        # usar precio coherente tras step
         current_price = self.close[self.step_idx - 1]
 
         new_net = self.balance + self.shares * current_price
@@ -163,7 +163,7 @@ class TradingEnvGlobal(gym.Env):
         # ================= REWARD =================
         log_return = np.log((new_net + 1e-8) / (prev_net + 1e-8))
 
-        # ✔ mejor: penalización por trade incremental, no acumulada
+        # penalización por trade incremental, no acumulada
         reward = log_return - self.lambda_efficiency * (1 if action != 0 else 0)
 
         done = self.step_idx >= self.n_steps - 1

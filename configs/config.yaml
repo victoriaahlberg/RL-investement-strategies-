@@ -16,6 +16,7 @@ stock_symbol: AAPL #every script uses this value
 #stock_symbol: SPY
 #stock_symbol: "GC=F" 
 #stock_symbol: "CL=F"
+#stock_symbol: "IDR"
 
 
 # Initial trading capital

@@ -16,6 +16,7 @@ stock_symbol: "AAPL"
 #stock_symbol: "QQQ"
 #stock_symbol: "GC=F"
 #stock_symbol: "CL=F"
+#stock_symbol: "IDR"
 
 data_interval: "1d"                          # Data frequency: "1d", "1h", "30m", "15m", "5m", "1m"
 start_date: "2022-12-01"

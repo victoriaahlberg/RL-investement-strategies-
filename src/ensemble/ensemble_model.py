@@ -60,8 +60,9 @@ class EnsembleModel:
 
         # Weighting & thresholds
         #ponderación de cada señal en la combinación final 
+        #aquí hemos ido probando diferentes weights
         self.custom_weights = self.ensemble_cfg.get("weighting", {}).get("custom_weights", None) #definidas en config 
-        #evita posiciones muy pequeñas
+        #evita posiciones muy pequeñas; filtro de ruido, también lo hemos ido cambiando
         self.min_position_threshold = float(self.ensemble_cfg.get("weighting", {}).get("min_position_threshold", 0.0))
         #posición max permitida 
         self.max_exposure_abs = float(self.ensemble_cfg.get("max_exposure_abs", 1.0))
@@ -97,7 +98,10 @@ class EnsembleModel:
     # --------------------------------------------------------------------- #
     # Classic fit_predict() – fast backtesting (may use future data for scaling)
     # --------------------------------------------------------------------- #
-    def fit_predict(self, df: pd.DataFrame, equity_curve: Optional[pd.Series] = None) -> pd.DataFrame:
+
+    #Pipeline completo: split train/test->entrena->predice->combina señales->genera posiciones
+
+    def fit_predict(self, df: pd.DataFrame, equity_curve: Optional[pd.Series] = None) -> pd.DataFrame: 
         """
         Traditional backtesting method.
         Kept for quick development / offline backtests.
@@ -134,7 +138,7 @@ class EnsembleModel:
         if self.lstm_enabled:
             self.lstm_predictor.train(train_df, self.cfg)
             test_df = self.lstm_predictor.predict(test_df, self.cfg)
-            train_df["signal_lstm"] = 0.0  # evita NaN
+            train_df["signal_lstm"] = 0.0 #solo predice en test
 
         # =========================
         # Combinar solo al final
@@ -157,17 +161,21 @@ class EnsembleModel:
             df["signal_ensemble"] = 0.0
             df["clean_ensemble"] = 0.0
         else:
+          # DESPUÉS — misma lógica que predict_out_of_sample:
+            sig_vols = df[signal_cols].rolling(window=20).std().fillna(1.0)
             if self.custom_weights:
-                w = np.array([self.custom_weights.get(c, 1.0) for c in signal_cols])
-                w = w / w.sum() if w.sum() > 0 else np.ones_like(w) / len(w)
-                df["signal_ensemble"] = (df[signal_cols] * w).sum(axis=1)
+                base_weights = np.array([self.custom_weights.get(c, 1.0) for c in signal_cols])
             else:
-                df["signal_ensemble"] = df[signal_cols].mean(axis=1) # si no hay ponderación hacemos la media simple
+                base_weights = np.ones(len(signal_cols)) / len(signal_cols)
 
-            df["signal_ensemble"] = df["signal_ensemble"].clip(-1.0, 1.0)
-            df["clean_ensemble"] = df["signal_ensemble"].where(
-                df["signal_ensemble"].abs() >= self.min_position_threshold, 0.0
-            )
+            combined_signals     = pd.Series(0.0, index=df.index)
+            total_dynamic_weight = pd.Series(0.0, index=df.index)
+            for i, col in enumerate(signal_cols):
+                dyn_w = base_weights[i] / (1.0 + sig_vols[col] * 0.5)
+                combined_signals     += df[col] * dyn_w
+                total_dynamic_weight += dyn_w
+
+            df["signal_ensemble"] = (combined_signals / total_dynamic_weight).clip(-1.0, 1.0)
 
         # 7. Overlay (sentiment + volatility)
         if "sentiment" in df.columns and "close" in df.columns:
@@ -222,6 +230,7 @@ class EnsembleModel:
             Full dataframe with all signals and final shifted position.
         """
         #output: posición desplazada un paso, sin mirar futuro
+        #aquí el modelo ya está entrenado
         full_df = full_df.copy()
     
         # --------------------------------------------------------------------- #
@@ -279,13 +288,6 @@ class EnsembleModel:
                 full_df[col] = (full_df[col] - 0.5) * 2.0 * 1.1
                 full_df[col] = full_df[col].clip(-1.0, 1.0)
     
-        # --------------------------------------------------------------------- #
-        # 7. Combine all active signals
-        # --------------------------------------------------------------------- #
-        signal_cols = self._active_signal_cols(full_df)
-        if not signal_cols:
-            full_df["signal_ensemble"] = 0.0
-            full_df["clean_ensemble"] = 0.0
         # --------------------------------------------------------------------- #
         # 7. Combine all active signals con FILTRO DE VOLATILIDAD
         # --------------------------------------------------------------------- #

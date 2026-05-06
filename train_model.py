@@ -86,8 +86,8 @@ train_test_split = config.get("train_test_split", 0.7)
 replicates = config.get("replicates", 1)
 
 
-# === DATA PATH (CORREGIDO) ===
-# === DATA PATH (CORREGIDO) ===
+
+# === DATA PATH ===
 raw_csv = os.path.join(raw_dir, f"{symbol}_raw.csv")
 processed_csv = os.path.join(processed_dir, f"{symbol}_sentiment_{sentiment_source if sentiment_mode == 'individual' else 'combined'}.csv")
 ensemble_csv = os.path.join(processed_dir, f"{symbol}_hybrid_ready.csv")
@@ -189,8 +189,6 @@ vec_env_rl_ens_sent = make_vec_env(
     lambda: TradingEnvGlobal(train_df, use_sentiment=True, use_ensemble=True),
     n_envs=1
 )
-
-
 
 
 # ================================
