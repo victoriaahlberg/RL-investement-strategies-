@@ -9,20 +9,23 @@
 # ===================================================================
 verbose: 1                                   # 0 = silent, 1 = normal, 2 = debug
 #stock_symbol: "NVDA"
-#stock_symbol: "TSLA"
+#stock_symbol: "TSLA" check
 stock_symbol: "AAPL"
 #stock_symbol: "META"
 #stock_symbol: "SPY"
 #stock_symbol: "QQQ"
 #stock_symbol: "GC=F"
 #stock_symbol: "CL=F"
-#stock_symbol: "IDR"
+#stock_symbol: "IDR" #funciona bien
+#stock_symbol: AMZN
+#stock_symbol: GOOGL
+#stock_symbol: MSFT
 
 data_interval: "1d"                          # Data frequency: "1d", "1h", "30m", "15m", "5m", "1m"
-start_date: "2022-12-01"
-end_date: "2026-03-15"
+start_date: "2018-12-01"
+end_date: "2026-04-15"
 
-initial_balance: 1000000                     # Starting capital for backtest
+initial_balance: 10000                    # Starting capital for backtest
 commission_bps: 1.5                          # Commission in basis points (e.g., 1.5bps = 0.00015)
 slippage_bps: 1.5                           # Slippage in basis points
 
@@ -88,7 +91,7 @@ ensemble:
   momentum:
   #usar precios pasados para calcular tendencias y asignar señales.
     enabled: true                           # Kept disabled as it introduced noise/bias
-    lookback_bars: 48 #número de periodos que mira hacia atrás
+    lookback_bars: 48  #número de periodos que mira hacia atrás; IGUAL AQUÍ HAY QUE TESTEAR MÁS cambiado de 48 a 96
     vol_lookback_bars: 96
     use_log_returns: true
     target_vol: 0.20 #volatilidad objetivo para normalizar la señal.
@@ -119,7 +122,7 @@ ensemble:
     model_path: "ensemble/models/xgb_ensemble.joblib"
     retrain: true                          # MUST BE TRUE for the initial training run.
 
-    prediction_horizon_hours: 8              # Target: Price move in the next 8 hours
+    prediction_horizon_hours: 8     # Target: Price move in the next 8 hours
 
     # Feature engineering parameters
     n_lags: 5
@@ -133,11 +136,11 @@ ensemble:
     # XGBoost Hyperparameters
     params:
       n_estimators: 300
-      max_depth: 4
-      learning_rate: 0.05
+      max_depth: 4 #parametro cambiado de 4 a 5
+      learning_rate: 0.05 #Parametreo cambiado, antes 0.01
       subsample: 0.8
       colsample_bytree: 0.8
-      min_child_weight: 3
+      min_child_weight: 5
       objective: "binary:logistic"
       eval_metric: "logloss"
       reg_lambda: 1.0
@@ -158,23 +161,23 @@ ensemble:
       model_path: "ensemble/models/lstm_ensemble.pth"
       retrain: true           # Primera vez sí, luego puedes poner false
       sequence_length: 24  #cuantos pasos atrás mira el LSTM
-      input_size: 16                # número aproximado de features que genera generate_features()
-      hidden_size: 32
+      input_size: 16                # número aproximado de features que genera generate_features() 
+      hidden_size: 64
       num_layers: 1
       dropout: 0.4
-      epochs: 20
+      epochs: 10 #parámetro cambiado, entre 10  y20
       batch_size: 32
-      learning_rate: 0.001
+      learning_rate: 0.001 
       prediction_horizon_hours: 8
       normalize: true
       output_type: "proba"         
       threshold: 0.5
-
+ 
   # ---------------------------------------------------------------
   # SENTIMENT SIGNAL (Core signal generator)
   # ---------------------------------------------------------------
   sentiment_signal:
-    enabled: true
+    enabled: false
     pos_threshold: 0.05
     neg_threshold: -0.3
     smoothing_window: 1
@@ -188,14 +191,14 @@ ensemble:
   # RL-STYLE RISK OVERLAY (Drawdown Control)
   # ---------------------------------------------------------------
   rl_risk_overlay:
-    enabled: false
+    enabled: false #da mejores resultados para rl + ens+ sent cuando lo tenemos desactivado, por lo menos en apple
     
     # NEW PARAMETER: Annualization factor for 1h data (approx. trading hours in a year)
     periods_per_year: 2016 
 
     # Drawdown-based reduction (INCREASED TOLERANCE)
-    drawdown_reduce_level: -0.15             # Start reducing exposure if Drawdown hits 15%
-    drawdown_flat_level: -0.25               # Shut down completely if Drawdown hits 25%
+    drawdown_reduce_level: -0.2            # Start reducing exposure if Drawdown hits 15%
+    drawdown_flat_level: -0.25              # Shut down completely if Drawdown hits 25%
 
     # Sharpe-based boost 
     sharpe_boost_threshold: 0.7              # Boost exposure if Sharpe is above this threshold
@@ -212,12 +215,12 @@ ensemble:
   # ---------------------------------------------------------------
   weighting:
     equal_risk: false                        # Use equal risk weighting across all enabled models
-    min_position_threshold: 0.05        # Minimum required signal/position magnitude to open a trade
+    min_position_threshold: 0.05      # Minimum required signal/position magnitude to open a trade cambiado de 0.05 a 0.1
     custom_weights:
       signal_momentum: 0.4
-      signal_xgboost: 0.3
-      signal_lstm: 0.3
-      signal_sentiment: 0.1
+      signal_xgboost: 0.2
+      signal_lstm: 0.35
+      signal_sentiment: 0.05
 
 # ===================================================================
 # LOGGING

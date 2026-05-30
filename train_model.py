@@ -294,9 +294,7 @@ def run_montecarlo(model, env_config, n_runs=100):
         done = False
         t = 0
 
-        # estado inicial
-        sim_df.loc[t, "net_worth"] = initial_balance
-        sim_df.loc[t, "action"] = 0
+      
 
         while not done:
 
@@ -307,7 +305,7 @@ def run_montecarlo(model, env_config, n_runs=100):
             if t >= len(test_df):
                 break
 
-            date = test_df.index[t]
+            date = test_df.index[env.step_idx - 1]
             sim_df.loc[date, "net_worth"] = float(info["net_worth"])
             sim_df.loc[date, "action"] = action_val
             t+=1
@@ -327,9 +325,7 @@ def run_montecarlo(model, env_config, n_runs=100):
 
     return results
 
-# ================================
-# EJECUCIÓN DE SIMULACIONES
-# ================================
+
 # ================================
 # MONTE CARLO SIMULATIONS
 # ================================
@@ -474,6 +470,45 @@ def mc_metrics_summary(mc_runs, reference_index=None):
     w        = mean_sim["net_worth"].astype(float)
     actions  = mean_sim["action"]
     returns  = w.pct_change(fill_method=None).dropna()
+    avg_trade_vals = []
+    pn_ratio_vals = []
+
+    for r in mc_runs:
+
+        nw = r["net_worth"].astype(float).ffill()
+
+        action_series = (
+            pd.to_numeric(r["action"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+        )
+
+        # -----------------------------
+        # Average return per trade
+        # -----------------------------
+        n_t = num_trades(action_series)
+
+        total_ret = total_returns(nw)
+
+        avg_return_per_trade = (
+            total_ret / n_t if n_t > 0 else 0.0
+        )
+
+        avg_trade_vals.append(avg_return_per_trade)
+
+        # -----------------------------
+        # Positive / Negative trade ratio
+        # -----------------------------
+        daily_rets = nw.pct_change(fill_method=None).fillna(0)
+
+        trade_returns = daily_rets[action_series != 0]
+
+        pos = (trade_returns > 0).sum()
+        neg = (trade_returns < 0).sum()
+
+        pn_ratio_vals.append(
+            pos / neg if neg > 0 else np.nan
+        )
 
     return {
         # Performance
@@ -520,12 +555,92 @@ def mc_metrics_summary(mc_runs, reference_index=None):
         # Distribution shape
         "skew_final_wealth":     pd.Series(final_values).skew(),
         "kurtosis_final_wealth": pd.Series(final_values).kurtosis(),
-    }
+
+        # In mc_metrics_summary, inside the for loop:
+       "avg_return_per_trade_mean": np.nanmean(avg_trade_vals),
+        "avg_return_per_trade_std": np.nanstd(avg_trade_vals),
+
+        "positive_negative_trade_ratio_mean": np.nanmean(pn_ratio_vals),
+        "positive_negative_trade_ratio_std": np.nanstd(pn_ratio_vals),
+}
+    
 
 
  
  
 results = {name: mc_metrics_summary(runs) for name, runs in mc_dict.items()}
+# ============================================
+# EXPORT METRICS PER MODEL (Excel-friendly)
+# ============================================
+bh_final   = simulation_df_bh["net_worth"].iloc[-1]
+bh_returns = simulation_df_bh["net_worth"].pct_change(fill_method=None).dropna()  # DEPRECATION FIX
+os.makedirs("results/metrics", exist_ok=True)
+
+buy_hold_metrics = {
+    "Final Net Worth": bh_final,
+    "Sharpe": calculate_sharpe(simulation_df_bh["net_worth"], freq="1d"),
+    "Volatility": volatility(bh_returns),
+    "Max Drawdown": calculate_max_drawdown(simulation_df_bh["net_worth"]),
+    "Total Return": (bh_final / simulation_df_bh["net_worth"].iloc[0]) - 1,
+    "Annual Return": annualized_return(simulation_df_bh["net_worth"]),
+    "Calmar": np.nan,
+    "Num Trades": 1,
+    "Win Rate": np.nan,
+    "Avg Return Per Trade": np.nan,
+    "Pos/Neg Trade Ratio": np.nan,
+}
+
+# --------------------------------------------
+# Export RL models separately
+# --------------------------------------------
+
+metric_mapping = {
+    "Final Net Worth": "final_net_worth_mean",
+    "Sharpe": "sharpe_mean",
+    "Volatility": "volatility_mean",
+    "Max Drawdown": "max_drawdown_mean",
+    "Total Return": "total_return_mean",
+    "Annual Return": "annual_return_mean",
+    "Calmar": "calmar_mean",
+    "Num Trades": "num_trades_mean",
+    "Win Rate": "win_rate_mean",
+    "Avg Return Per Trade": "avg_return_per_trade_mean",
+    "Pos/Neg Trade Ratio": "positive_negative_trade_ratio_mean"
+}
+
+for model_name in ["RL", "RL+Sent", "RL+Ens", "RL+Ens+Sent"]:
+
+    rows = []
+
+    for display_name, metric_key in metric_mapping.items():
+
+        rows.append({
+            "Metric": display_name,
+            "Value": results[model_name][metric_key]
+        })
+
+    # add buy & hold as comparison
+    for metric_name, value in buy_hold_metrics.items():
+
+        rows.append({
+            "Metric": f"{metric_name} (Buy & Hold)",
+            "Value": value
+        })
+
+    df_export = pd.DataFrame(rows)
+
+    out_path = f"results/metrics/{symbol}_{model_name}_metrics.csv"
+
+    # Excel Spain friendly
+    df_export.to_csv(
+        out_path,
+        index=False,
+        sep=";",
+        decimal=","
+    )
+
+    print(f"Saved: {out_path}")
+
 
 stats_table = pd.DataFrame({
     "Metric": [
@@ -586,13 +701,13 @@ plt.show()
 # METRICS TABLE
 # ================================
  
-bh_final   = simulation_df_bh["net_worth"].iloc[-1]
-bh_returns = simulation_df_bh["net_worth"].pct_change(fill_method=None).dropna()  # DEPRECATION FIX
+
  
 metrics_table = pd.DataFrame({
     "Metric": [
         "Final Net Worth", "Sharpe", "Volatility", "Max Drawdown",
-        "Total Return", "Annual Return", "Calmar", "Num Trades", "Win Rate",
+        "Total Return", "Annual Return", "Calmar", "Num Trades", "Win Rate", "Avg Return Per Trade",
+        "Pos/Neg Trade Ratio"
     ],
     **{
         name: [
@@ -605,6 +720,8 @@ metrics_table = pd.DataFrame({
             results[name]["calmar_mean"],       # now populated
             results[name]["num_trades_mean"],
             results[name]["win_rate_mean"],
+            results[name]["avg_return_per_trade_mean"],
+            results[name]["positive_negative_trade_ratio_mean"]
         ]
         for name in ["RL", "RL+Sent", "RL+Ens", "RL+Ens+Sent"]
     },
@@ -618,6 +735,8 @@ metrics_table = pd.DataFrame({
         np.nan,   # calmar not meaningful for single-trade B&H
         1,
         np.nan,
+        np.nan,   # avg return per trade
+        np.nan,   # pos/neg ratio  
     ],
 })
  
@@ -648,6 +767,9 @@ os.makedirs("results", exist_ok=True)
 aligned_index = test_df.index
  
 results_df = pd.DataFrame(index=aligned_index)
+##testnig to see if correct CSV format 
+for col in results_df.columns:
+    results_df[col] = pd.to_numeric(results_df[col], errors='coerce')
  
 results_df["Net_Worth_Final"]       = (simulation_rl_ens_sent["net_worth"]
                                         .reindex(aligned_index).ffill()
@@ -672,6 +794,30 @@ results_df.to_csv("results/aapl_trading_results.csv")
 logger.info("Saved trading results to results/aapl_trading_results.csv")
 
 
+# Run this once per stock, saving results each time
+# Then call the plot function at the end
+
+results_store = {}  # accumulate across stocks
+
+for stock in ["AAPL", "TSLA", "META", "MSFT", "AMZN", 
+               "NVDA", "GOOGL", "IDR", "ITX", "SPY"]:
+    
+    # Change symbol in config and run train_model.py
+    # Then save the outputs:
+    results_store[stock] = {
+        "test_df": test_df,
+        "mc_rl_no_sent": mc_rl_no_sent,
+        "mc_rl_sent": mc_rl_sent,
+        "mc_rl_ens_no_sent": mc_rl_ens_no_sent,
+        "mc_rl_ens_sent": mc_rl_ens_sent,
+        "bh": simulation_df_bh,
+    }
+    
+    # Save to disk so you don't lose it between runs
+    import pickle
+    with open(f"results/{stock}_results.pkl", "wb") as f:
+        pickle.dump(results_store[stock], f)
+
 def align(sim):
     return sim.reindex(test_df.index).ffill()
 
@@ -683,64 +829,136 @@ simulations_dict = {
     }
 
 def plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol):
+    models = {
+    "RL": simulation_rl_no_sent,
+    "RL+Sent": simulation_rl_sent,
+    "RL+Ens": simulation_rl_ens_no_sent,
+    "RL+Ens+Sent": simulation_rl_ens_sent
+    }
     
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 14), sharex=True)
 
     # =========================
     # 1. PRECIO + ACCIONES (solo modelo final)
     # =========================
-    final_model = simulation_rl_ens_sent.reindex(test_df.index).ffill()
+    for name, sim in models.items():
 
-    common_index = final_model.index.intersection(test_df.index)
-    test_df_plot = test_df.loc[common_index]
-    final_model = final_model.loc[common_index]
-
-
-    ax1.plot(test_df.index, test_df["close"], label="Close Price")
-
-    buy = final_model["action"].reindex(test_df.index).fillna(0) == 1
-    sell = final_model["action"].reindex(test_df.index).fillna(0) == 2
-
-    ax1.scatter(test_df.index[buy], test_df["close"][buy], marker="^")
-    ax1.scatter(test_df.index[sell], test_df["close"][sell], marker="v")
-
-    ax1.set_title(f"{symbol} Price & Actions (Final Model)")
-    ax1.legend()
-
-    # =========================
-    # 2. NET WORTH (todos)
-    # =========================
-    for name, sim in simulations_dict.items():
         sim = sim.reindex(test_df.index).ffill()
-        ax2.plot(sim.index, sim["net_worth"], label=name)
 
-    ax2.set_title("Net Worth Comparison")
-    ax2.set_ylabel("Net Worth ($)")
-    ax2.legend()
+        buy = sim["action"].fillna(0) == 1
+        sell = sim["action"].fillna(0) == 2
 
-    # =========================
-    # 3. P&L (todos)
-    # =========================
-    for name, sim in simulations_dict.items():
-        pnl = sim['net_worth'] - initial_balance
-        ax3.plot(sim.index, pnl, label=name)
+        # =====================================
+        # 1. BUY / SELL
+        # =====================================
 
-    pnl_bh = simulation_df_bh['net_worth'] - initial_balance
-    ax3.plot(simulation_df_bh.index, pnl_bh, label="Buy & Hold", linestyle=':')
+        plt.figure(figsize=(14,5))
 
-    ax3.axhline(0, linestyle='--')
+        plt.plot(
+            test_df.index,
+            test_df["close"],
+            label="Close"
+        )
 
-    ax3.set_title("Profit & Loss")
-    ax3.set_ylabel("P&L ($)")
-    ax3.set_xlabel("Date")
-    ax3.legend()
+        plt.scatter(
+            test_df.index[buy],
+            test_df["close"][buy],
+            marker="^",
+            color="green",
+            label="BUY",
+            alpha=0.7
+        )
 
-    plt.tight_layout()
-    plt.savefig(f"results/{symbol}_main_plots.png", dpi=150)
-    plt.show()
+        plt.scatter(
+            test_df.index[sell],
+            test_df["close"][sell],
+            marker="v",
+            color="red",
+            label="SELL",
+            alpha=0.7
+        )
 
+        plt.title(f"{symbol} — {name} Buy/Sell Signals")
+        plt.legend()
+        plt.tight_layout()
 
+        plt.savefig(
+            f"results/{symbol}_{name}_buy_sell.png",
+            dpi=150
+        )
 
+        plt.close()
+
+        # =====================================
+        # 2. NET WORTH
+        # =====================================
+
+        plt.figure(figsize=(14,5))
+
+        plt.plot(
+            sim.index,
+            sim["net_worth"],
+            label=name
+        )
+
+        plt.plot(
+            simulation_df_bh.index,
+            simulation_df_bh["net_worth"],
+            "--",
+            color="black",
+            label="Buy & Hold"
+        )
+
+        plt.title(f"{symbol} — {name} Net Worth")
+        plt.legend()
+        plt.tight_layout()
+
+        plt.savefig(
+            f"results/{symbol}_{name}_networth.png",
+            dpi=150
+        )
+
+        plt.close()
+
+        # =====================================
+        # 3. P&L
+        # =====================================
+
+        plt.figure(figsize=(14,5))
+
+        pnl_model = sim["net_worth"] - initial_balance
+        pnl_bh = simulation_df_bh["net_worth"] - initial_balance
+
+        plt.plot(
+            sim.index,
+            pnl_model,
+            label=name
+        )
+
+        plt.plot(
+            simulation_df_bh.index,
+            pnl_bh,
+            "--",
+            color="black",
+            label="Buy & Hold"
+        )
+
+        plt.axhline(
+            0,
+            linestyle="--",
+            color="gray"
+        )
+
+        plt.title(f"{symbol} — {name} Profit & Loss")
+        plt.ylabel("P&L ($)")
+        plt.legend()
+        plt.tight_layout()
+
+        plt.savefig(
+            f"results/{symbol}_{name}_pnl.png",
+            dpi=150
+        )
+
+        plt.close()
 def plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol):
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
@@ -752,47 +970,88 @@ def plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol)
             for r in runs
         ])
         if len(np.unique(all_actions)) > 1:
-            sns.kdeplot(all_actions, label=name, ax=ax, warn_singular=False)
+            sns.histplot(
+                all_actions,
+                discrete=True,
+                stat="probability",
+                shrink=0.8,
+                ax=ax,
+                label=name
+            )
         else:
             ax.axvline(all_actions[0], label=f"{name} (constant)", linestyle="--")
     ax.set_title("Action distribution (pooled MC runs)")
     ax.set_xlabel("Action  (0=Hold, 1=Buy, 2=Sell)")
-    ax.legend()
-
+    ax.legend(loc="best")
+    # --- 2. Returns distribution ---
     # --- 2. Returns distribution ---
     ax = axes[0, 1]
-    for name, sim in simulations_dict.items():
-        returns = sim["net_worth"].pct_change(fill_method=None).dropna()
-        if returns.std() > 0:
-            sns.kdeplot(returns, label=name, ax=ax, warn_singular=False)
-    ax.set_title("Returns distribution (mean trajectory)")
-    ax.legend()
+
+    data = []
+    labels = []
+
+    for name, runs in mc_dict.items():
+
+        final_vals = []
+
+        for r in runs:
+
+            vals = pd.to_numeric(
+                r["net_worth"],
+                errors="coerce"
+            ).ffill()
+
+            final_vals.append(vals.iloc[-1])
+
+        data.append(final_vals)
+        labels.append(name)
+
+    # violin
+    parts = ax.violinplot(
+        data,
+        showmeans=False,
+        showmedians=True,
+        showextrema=True
+    )
+
+    # transparency
+    for pc in parts['bodies']:
+        pc.set_alpha(0.4)
+
+    # overlay boxplot
+    ax.boxplot(
+        data,
+        positions=np.arange(1, len(labels)+1),
+        widths=0.15
+    )
+
+    ax.set_xticks(np.arange(1, len(labels)+1))
+    ax.set_xticklabels(labels, rotation=15)
+
+    ax.axhline(
+        initial_balance,
+        linestyle='--',
+        color='gray',
+        alpha=0.5
+    )
+
+    ax.set_title("Final wealth distribution")
+    ax.set_ylabel("Final net worth ($)")
 
     # --- 3. Profit vs Trades (with polyfit guard) ---
     ax = axes[1, 0]
-    x, y, labels = [], [], []
-    for name, sim in simulations_dict.items():
-        profit = sim["net_worth"].iloc[-1] - initial_balance
-        trades = num_trades(sim["action"])
-        ax.scatter(trades, profit, label=name, zorder=3)
-        x.append(trades)
-        y.append(profit)
-        labels.append(name)
+    names = list(simulations_dict.keys())
+    profits = [sim['net_worth'].iloc[-1] - initial_balance for sim in simulations_dict.values()]
+    trades = [num_trades(sim['action']) for sim in simulations_dict.values()]
 
-    # only fit if there is actual variance in both axes
-    if len(set(x)) > 1 and len(set(y)) > 1 and not any(np.isnan(y)):
-        try:
-            z = np.polyfit(x, y, 1)
-            p = np.poly1d(z)
-            xs = sorted(x)
-            ax.plot(xs, p(xs), linestyle="--", alpha=0.5, color="gray")
-        except (np.linalg.LinAlgError, RuntimeWarning):
-            pass   # silently skip if polyfit still fails
-
-    ax.set_title("Profit vs trades")
-    ax.set_xlabel("Trades")
+    bars = ax.bar(names, profits, color=['#4C72B0','#DD8452','#55A868','#C44E52'])
+    for bar, t in zip(bars, trades):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
+                f'{int(t)} trades', ha='center', va='bottom', fontsize=9)
+    ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+    ax.set_title("Profit by model (trades annotated)")
     ax.set_ylabel("Profit ($)")
-    ax.legend()
+    
 
     # --- 4. MC boxplot ---
     ax = axes[1, 1]
@@ -830,6 +1089,255 @@ sns.histplot(sharpe_values, kde=True)
 plt.title("Sharpe distribution (RL+Ens+Sent)")
 plt.show()
 
+def plot_metrics_barchart(metrics_table, symbol):
+    metrics_to_plot = ['Sharpe', 'Total Return', 'Max Drawdown', 'Win Rate']
+    fig, axes = plt.subplots(1, len(metrics_to_plot), figsize=(16, 5))
+    models = [c for c in metrics_table.columns if c != 'Metric']
+    colors = ['#4C72B0','#DD8452','#55A868','#C44E52','#8172B2']
+
+    for ax, metric in zip(axes, metrics_to_plot):
+        row = metrics_table[metrics_table['Metric'] == metric]
+        if row.empty:
+            continue
+        vals = [float(row[m].values[0]) if pd.notna(row[m].values[0]) else 0 for m in models]
+        bars = ax.bar(models, vals, color=colors[:len(models)])
+        ax.set_title(metric)
+        ax.tick_params(axis='x', rotation=30)
+        ax.axhline(0, color='gray', linestyle='--', alpha=0.4)
+
+    plt.suptitle(f"{symbol} — Key metrics comparison")
+    plt.tight_layout()
+    plt.savefig(f"results/{symbol}_metrics_barchart.png", dpi=150)
+    plt.show()
+
 
 plot_main_results(test_df, simulations_dict, simulation_df_bh, initial_balance, symbol)
+""""
 plot_secondary_dashboard(simulations_dict, mc_dict, initial_balance, symbol)
+plot_metrics_barchart(metrics_table, symbol)
+"""
+import matplotlib.pyplot as plt
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+
+def plot_10_asset_networth(
+    symbols,
+    test_dfs,
+    mc_dicts,
+    bh_dicts,
+    initial_balance=10000,
+    best_config="RL+Ens"
+):
+    """
+    symbols:       list of 10 tickers, AAPL first
+    test_dfs:      dict {symbol: test_df}
+    mc_dicts:      dict {symbol: {config_name: mc_runs_list}}
+    bh_dicts:      dict {symbol: simulation_df_bh}
+    best_config:   which config to plot for secondary assets
+    """
+
+    def mc_to_mean_series(mc_runs, reference_index, initial_balance):
+        aligned = []
+        for r in mc_runs:
+            nw = pd.to_numeric(
+                r.reindex(reference_index)["net_worth"],
+                errors="coerce"
+            ).ffill().fillna(initial_balance)
+            aligned.append(nw.to_numpy())
+        arr = np.vstack(aligned)
+        return pd.Series(arr.mean(axis=0), index=reference_index)
+
+    # ── Layout: 2 rows × 5 cols ────────────────────────────────────────
+    fig = plt.figure(figsize=(22, 10))
+    gs  = gridspec.GridSpec(2, 5, figure=fig, hspace=0.45, wspace=0.35)
+
+    config_colors = {
+        "RL":          "#E53935",
+        "RL+Sent":     "#FB8C00",
+        "RL+Ens":      "#43A047",
+        "RL+Ens+Sent": "#1E88E5",
+    }
+
+    for idx, symbol in enumerate(symbols):
+        row, col = divmod(idx, 5)
+        ax = fig.add_subplot(gs[row, col])
+
+        ref_idx = test_dfs[symbol].index
+
+        # ── AAPL: plot all 4 configurations ──────────────────────────
+        if symbol == "AAPL":
+            for cfg_name, mc_runs in mc_dicts[symbol].items():
+                mean_nw = mc_to_mean_series(mc_runs, ref_idx, initial_balance)
+                ax.plot(
+                    mean_nw.index, mean_nw.values,
+                    label=cfg_name,
+                    color=config_colors.get(cfg_name, "gray"),
+                    linewidth=1.8
+                )
+            ax.set_title("AAPL (full ablation)",
+                         fontsize=9, fontweight="bold")
+
+        # ── Other 9 assets: best config only ─────────────────────────
+        else:
+            if best_config in mc_dicts[symbol]:
+                mean_nw = mc_to_mean_series(
+                    mc_dicts[symbol][best_config], ref_idx, initial_balance
+                )
+                ax.plot(
+                    mean_nw.index, mean_nw.values,
+                    label=best_config,
+                    color=config_colors.get(best_config, "#1E88E5"),
+                    linewidth=1.8
+                )
+            ax.set_title(symbol, fontsize=9, fontweight="bold")
+
+        # ── Buy & Hold for every asset ────────────────────────────────
+        bh = bh_dicts[symbol]
+        ax.plot(
+            bh.index, bh["net_worth"].values,
+            label="Buy & Hold",
+            color="black",
+            linewidth=1.1,
+            linestyle="--",
+            alpha=0.7
+        )
+
+        # ── Reference line ────────────────────────────────────────────
+        ax.axhline(
+            initial_balance,
+            color="gray", linestyle=":", linewidth=0.8, alpha=0.5
+        )
+
+        # ── Formatting ────────────────────────────────────────────────
+        ax.set_ylabel("Net worth ($)", fontsize=7)
+        ax.tick_params(axis="x", rotation=30, labelsize=6)
+        ax.tick_params(axis="y", labelsize=7)
+        ax.grid(True, alpha=0.25)
+
+        if idx == 0:
+            ax.legend(fontsize=6, loc="upper left")
+        else:
+            # compact legend for secondary assets
+            ax.legend(fontsize=6, loc="upper left",
+                      labels=[best_config, "Buy & Hold"])
+
+    fig.suptitle(
+        f"Net worth trajectories — {best_config} vs Buy & Hold (10 assets)\n"
+        f"AAPL shows full ablation study",
+        fontsize=12, fontweight="bold", y=1.01
+    )
+
+    os.makedirs("results", exist_ok=True)
+    plt.savefig(
+        "results/multi_asset_10_networth.png",
+        dpi=150, bbox_inches="tight"
+    )
+    plt.show()
+    print("Saved: results/multi_asset_10_networth.png")
+
+import pickle
+results_store = {}
+symbols = [
+    "AAPL",
+    "TSLA",
+    "META",
+    "MSFT",
+    "AMZN",
+    "NVDA",
+    "GOOGL",
+    "IDR",
+    "ITX",
+    "SPY"
+]
+
+results_store = {}
+for stock in symbols:
+    with open(f"results/{stock}_results.pkl", "rb") as f:
+        results_store[stock] = pickle.load(f)
+
+# Then build the dicts the plot function expects
+test_dfs = {s: results_store[s]["test_df"] for s in results_store}
+bh_dicts = {s: results_store[s]["bh"] for s in results_store}
+mc_dicts = {s: {
+    "RL":          results_store[s]["mc_rl_no_sent"],
+    "RL+Sent":     results_store[s]["mc_rl_sent"],
+    "RL+Ens":      results_store[s]["mc_rl_ens_no_sent"],
+    "RL+Ens+Sent": results_store[s]["mc_rl_ens_sent"],
+} for s in results_store}
+
+plot_10_asset_networth(
+    symbols,
+    test_dfs,
+    mc_dicts,
+    bh_dicts
+)
+import os
+import matplotlib.pyplot as plt
+
+def plot_aapl_ablation(simulations_dict, bh_df, test_df, initial_balance):
+    """
+    simulations_dict must contain:
+        - RL
+        - RL+Sent
+        - RL+Ens
+        - RL+Ens+Sent
+    """
+
+    os.makedirs("results", exist_ok=True)
+
+    configs = ["RL", "RL+Sent", "RL+Ens", "RL+Ens+Sent"]
+
+    cumulative = {}
+
+    for i, cfg in enumerate(configs):
+
+        cumulative[cfg] = simulations_dict[cfg]
+
+        plt.figure(figsize=(12, 5))
+
+        # --- Plot Buy & Hold ---
+        plt.plot(
+            bh_df.index,
+            bh_df["net_worth"],
+            label="Buy & Hold",
+            linestyle="--",
+            color="black"
+        )
+
+        # --- Plot all configs up to current step ---
+        for name in configs[:i+1]:
+            sim = cumulative[name]
+            sim = sim.reindex(test_df.index).ffill()
+            plt.plot(
+                sim.index,
+                sim["net_worth"],
+                label=name
+            )
+
+        plt.title(f"AAPL Ablation Study — up to {cfg}")
+        plt.ylabel("Net Worth ($)")
+        plt.xlabel("Date")
+        plt.legend()
+        plt.grid(alpha=0.3)
+
+        path = f"results/AAPL_ablation_{i+1}_{cfg}.png"
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        plt.show()
+
+        print(f"Saved: {path}")
+"""
+plot_aapl_ablation(
+    simulations_dict={
+        "RL": simulation_rl_no_sent,
+        "RL+Sent": simulation_rl_sent,
+        "RL+Ens": simulation_rl_ens_no_sent,
+        "RL+Ens+Sent": simulation_rl_ens_sent
+    },
+    bh_df=simulation_df_bh,
+    test_df=test_df,
+    initial_balance=10000
+)"""

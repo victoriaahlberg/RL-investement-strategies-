@@ -13,12 +13,12 @@ class TradingEnvGlobal(gym.Env):
     def __init__(
         self,
         df,
-        use_sentiment=False,
+        use_sentiment=True ,
         use_ensemble=False,
-        initial_balance=10_000.0,
+        initial_balance=10000.0,
         window_size=10,
         commission=0.0015,
-        lambda_efficiency=0.0
+        lambda_efficiency=0.005
         
     ):
         super().__init__()
@@ -70,6 +70,8 @@ class TradingEnvGlobal(gym.Env):
         self.commission = commission
         self.lambda_efficiency = lambda_efficiency
         self.step_idx = self.window_size
+        self.use_sentiment = use_sentiment
+        self.use_ensemble = use_ensemble
         # =========================
         # SPACE
         # =========================
@@ -163,9 +165,8 @@ class TradingEnvGlobal(gym.Env):
         # ================= REWARD =================
         log_return = np.log((new_net + 1e-8) / (prev_net + 1e-8))
 
-        # penalización por trade incremental, no acumulada
-        reward = log_return - self.lambda_efficiency * (1 if action != 0 else 0)
 
+        reward = log_return - self.lambda_efficiency * (1 if action != 0 else 0)
         done = self.step_idx >= self.n_steps - 1
 
         return self._get_obs(), float(reward), done, False, {

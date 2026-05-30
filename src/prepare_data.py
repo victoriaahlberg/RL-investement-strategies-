@@ -79,7 +79,7 @@ def generate_super_csv():
         df_results['signal_ensemble'] = df_results['clean_ensemble']
     
     # 6. Unir con Sentimiento
-    processed_path = f"data/processed/{symbol}_sentiment_finnhub.csv"
+    processed_path = f"data/processed/{symbol}_sentiment_alphavantage.csv"
     
     if os.path.exists(processed_path):
         print(f"[INFO] Integrando archivo de sentimiento: {processed_path}")

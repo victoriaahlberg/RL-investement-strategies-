@@ -176,6 +176,10 @@ class EnsembleModel:
                 total_dynamic_weight += dyn_w
 
             df["signal_ensemble"] = (combined_signals / total_dynamic_weight).clip(-1.0, 1.0)
+            df["clean_ensemble"] = df["signal_ensemble"].where(
+            df["signal_ensemble"].abs() >= self.min_position_threshold,
+            0.0
+        )
 
         # 7. Overlay (sentiment + volatility)
         if "sentiment" in df.columns and "close" in df.columns:
@@ -199,7 +203,7 @@ class EnsembleModel:
             equity = (1.0 + df["close"].pct_change().fillna(0.0) * pos).cumprod() #multiplca por pos para ajustar la rentabilidad segun la posicion
             df = self.rl_overlay.apply(df, equity_curve if equity_curve is not None else equity)
 
-        # 10. Final position (shifted by one bar. avoids lookahead) – FIXED VERSION
+        # 10. Final position (shifted by one bar. avoids lookahead)
         base = df.get("exposure_rl", df.get("exposure", df["clean_ensemble"])) #señal ajustada por RL
         scaling = float(self.cfg.get("position_scaling", 1.0)) #multiplica por un factor global
         #señal combinada->ajustada por overlay->ajustada por vol->ajustada por RL-> escalada->desplazara para no mirar el futuro
@@ -210,6 +214,52 @@ class EnsembleModel:
         print("XGB:", df["signal_xgboost"].describe())
         print("ENS:", df["signal_ensemble"].describe())
         print("POS:", df["position"].value_counts())
+
+        print("\n========== ENSEMBLE SUMMARY ==========")
+
+        summary_cols = [
+            "signal_momentum",
+            "signal_xgboost",
+            "signal_lstm",
+            "signal_sentiment",
+            "signal_ensemble",
+            "clean_ensemble",
+            "position"
+        ]
+
+        for col in summary_cols:
+
+            if col in df.columns:
+
+                s = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+                print(f"\n--- {col} ---")
+
+                print(f"mean      : {s.mean():.4f}")
+                print(f"std       : {s.std():.4f}")
+                print(f"min/max   : {s.min():.4f} / {s.max():.4f}")
+
+                if col == "position":
+
+                    counts = s.value_counts(normalize=True).sort_index()
+
+                    print("\nposition distribution:")
+
+                    for k, v in counts.items():
+                        print(f"  {k:+.0f} : {v*100:.2f}%")
+
+                    trades = (s.diff().abs() > 0).sum()
+
+                    print(f"\ntrades generated: {trades}")
+
+            print("\n======================================\n")
+            print("\n===== ENSEMBLE WEIGHTS EFFECT =====")
+
+            for col in signal_cols:
+
+                contrib = (df[col].abs().mean())
+
+                print(f"{col}: avg abs contribution = {contrib:.4f}")
         return df.reset_index()
 
     # --------------------------------------------------------------------- #

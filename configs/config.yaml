@@ -6,31 +6,31 @@ verbose: 0
 # Stock symbol to analyze
 #stock_symbol: NVDA      # ← Sentiment's king in 2025
 # Other top options:
-#stock_symbol: TSLA
+#stock_symbol: TSLA #good
 #stock_symbol: META
- #stock_symbol: GOOGL
+#stock_symbol: GOOGL
 stock_symbol: AAPL #every script uses this value
-# stock_symbol: MSFT
+#stock_symbol: MSFT
+#stock_symbol: AMZN
 # stock_symbol: AMD
 #stock_symbol: QQQ 
 #stock_symbol: SPY
 #stock_symbol: "GC=F" 
-#stock_symbol: "CL=F"
-#stock_symbol: "IDR"
+#stock_symbol: "IDR" #funciona bien
 
 
 # Initial trading capital
 initial_balance: 10000
-commission: 0.001   # 0.1 % 
+commission: 0.0015   # 0.1 % 
 
 
 # Date range for historical data
 # start_date: "2023-11-16"
 # end_date: "2024-11-10"
-start_date: "2022-12-01"
+start_date: "2018-12-01"
 end_date: "2026-04-15"
 #de 2022 a 2026 da buenos resultados
-data_interval: "1h"  # "1d" (daily), '1h' (hourly), '30m', '15m', '5m', etc.
+data_interval: "1d"  # "1d" (daily), '1h' (hourly), '30m', '15m', '5m', etc.
 
 
 # Directory paths
@@ -47,7 +47,7 @@ sentiment_sources:         # Used only when mode == "combined"
   - gdelt
   - finnhub
   - yahoo
-sentiment_source: finnhub  # Used only when mode == "individual" (e.g., finnhub, alphavantage, yahoo)
+sentiment_source: alphavantage  # Used only when mode == "individual" (e.g., finnhub, alphavantage, yahoo)
 force_refresh: false        # If true, rebuilds cache and refetches all news
 
 # =============================================================================
@@ -56,13 +56,13 @@ force_refresh: false        # If true, rebuilds cache and refetches all news
 algo: PPO  # PPO, SAC, TD3, A2C
 
 # === PPO ===
-ppo_learning_rate: 0.0001
-ppo_n_steps: 256
-ppo_batch_size: 128
+ppo_learning_rate: 0.0001 #valor cambiado
+ppo_n_steps: 2048
+ppo_batch_size: 64
 ppo_gamma: 0.99
 ppo_gae_lambda: 0.95
-ppo_clip_range: 0.1
-ppo_ent_coef: 0.001
+ppo_clip_range: 0.2 #checkeado
+ppo_ent_coef: 0.01 #valor cambiado
 
 # === SAC ===
 sac_buffer_size: 1000000
@@ -90,22 +90,22 @@ lstm_hidden_size: 64
 # =============================================================================
 # EXPERIMENTAL SETUP
 # =============================================================================
-seed: null  # null = random, int = fixed
+seed: 42  # null = random, int = fixed
 
-timesteps: 20000
+timesteps: 100000
 
 # === MODE: STATIC SPLIT OR WALK-FORWARD ===
 # walk_forward: true → walk-forward (1 day ahead)
 # walk_forward: false → static train/test split
-walk_forward: true
-prediction_horizon: 5  # Only used in walk-forward
+walk_forward: false
+prediction_horizon: 1  # Only used in walk-forward
 
 # Only used when walk_forward: false
-train_test_split: 0.9  # 90% train, 10% test
+train_test_split: 0.8  # 90% train, 10% test
 
 # Replication (only in static mode)
 replicates: 1
 
 # Sentiment comparison mode
 # "with", "without", "both"
-sentiment_mode: "without"
+#sentiment_mode: "with"
